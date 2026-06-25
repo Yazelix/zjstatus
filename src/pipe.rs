@@ -42,7 +42,7 @@ pub fn parse_protocol(state: &mut ZellijState, input: &str) -> bool {
 
 #[tracing::instrument(skip_all)]
 fn process_line(state: &mut ZellijState, line: &str) -> bool {
-    let parts = line.split("::").collect::<Vec<&str>>();
+    let parts = line.splitn(4, "::").collect::<Vec<&str>>();
 
     if parts.len() < 3 {
         return false;
@@ -116,4 +116,27 @@ fn rerun_command(state: &mut ZellijState, command_name: &str) {
     state
         .command_results
         .insert(command_name.to_string(), command_result.clone());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pipe_protocol_preserves_separator_text_in_content() {
+        let mut state = ZellijState::default();
+
+        assert!(parse_protocol(
+            &mut state,
+            r#"zjstatus::pipe::pipe_tab_activity::{"base_name":"agent::plan"}"#
+        ));
+
+        assert_eq!(
+            state
+                .pipe_results
+                .get("pipe_tab_activity")
+                .map(String::as_str),
+            Some(r#"{"base_name":"agent::plan"}"#)
+        );
+    }
 }

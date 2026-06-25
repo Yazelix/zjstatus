@@ -455,11 +455,11 @@ mod test {
 
     #[rstest]
     // no result, interval 1 second
-    #[case(1, &ZellijState::default(), true)]
+    #[case("missing_result_interval", 1, &ZellijState::default(), true)]
     // only run once without a result
-    #[case(0, &ZellijState::default(), true)]
+    #[case("missing_result_once", 0, &ZellijState::default(), true)]
     // do not run with run once and result
-    #[case(0, &ZellijState {
+    #[case("existing_result_once", 0, &ZellijState {
         command_results: BTreeMap::from([(
             "test".to_owned(),
             CommandResult::default(),
@@ -467,7 +467,7 @@ mod test {
         ..ZellijState::default()
     }, false)]
     // run if interval is exceeded
-    #[case(1, &ZellijState {
+    #[case("expired_result_interval", 1, &ZellijState {
         command_results: BTreeMap::from([(
             "test".to_owned(),
             CommandResult{
@@ -478,7 +478,7 @@ mod test {
         ..ZellijState::default()
     }, true)]
     // do not run if interval is not exceeded
-    #[case(1, &ZellijState {
+    #[case("fresh_result_interval", 1, &ZellijState {
         command_results: BTreeMap::from([(
             "test".to_owned(),
             CommandResult{
@@ -489,10 +489,19 @@ mod test {
         ..ZellijState::default()
     }, false)]
     pub fn test_run_command_if_needed(
+        #[case] lock_namespace: &str,
         #[case] interval: i64,
         #[case] state: &ZellijState,
         #[case] expected: bool,
     ) {
+        let mut state = state.clone();
+        state.plugin_uuid = format!(
+            "zjstatus-command-test-{}-{}",
+            std::process::id(),
+            lock_namespace
+        );
+        release("test", state.clone());
+
         let res = run_command_if_needed(
             CommandConfig {
                 command: "echo test".to_owned(),
@@ -505,8 +514,9 @@ mod test {
                 hide_on_empty_stdout: false,
             },
             "test",
-            state,
+            &state,
         );
+        release("test", state);
         assert_eq!(res, expected);
     }
 }

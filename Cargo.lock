@@ -3339,6 +3339,8 @@ dependencies = [
  "lazy_static",
  "regex",
  "rstest",
+ "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
  "uuid",
