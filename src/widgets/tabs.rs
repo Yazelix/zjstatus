@@ -328,7 +328,7 @@ impl TabsWidget {
         tab: &TabInfo,
         panes: &PaneManifest,
         mode: &ModeInfo,
-        tab_activity_by_id: &HashMap<usize, TabActivityOverlay>,
+        tab_activity_by_id: &HashMap<usize, TabActivityState>,
     ) -> String {
         let formatters = self.select_format(tab, mode);
         let mut output = "".to_owned();
@@ -385,7 +385,7 @@ impl TabsWidget {
         &self,
         tab: &TabInfo,
         mode: &ModeInfo,
-        tab_activity_by_id: &HashMap<usize, TabActivityOverlay>,
+        tab_activity_by_id: &HashMap<usize, TabActivityState>,
     ) -> String {
         if mode.mode == InputMode::RenameTab {
             return match tab.name.is_empty() {
@@ -396,8 +396,8 @@ impl TabsWidget {
 
         tab_activity_by_id
             .get(&tab.tab_id)
-            .and_then(|activity| {
-                activity.decorated_name(
+            .and_then(|activity_state| {
+                activity_state.decorated_name(
                     &tab.name,
                     &self.activity_busy_marker,
                     &self.activity_alert_marker,
@@ -406,7 +406,7 @@ impl TabsWidget {
             .unwrap_or_else(|| tab.name.clone())
     }
 
-    fn tab_activity_by_id(&self, state: &ZellijState) -> HashMap<usize, TabActivityOverlay> {
+    fn tab_activity_by_id(&self, state: &ZellijState) -> HashMap<usize, TabActivityState> {
         self.activity_pipe_name
             .as_ref()
             .and_then(|name| state.pipe_results.get(name))
@@ -498,19 +498,14 @@ enum TabActivityState {
     Alert,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TabActivityOverlay {
-    state: TabActivityState,
-}
-
-impl TabActivityOverlay {
+impl TabActivityState {
     fn decorated_name(
         &self,
         fallback_name: &str,
         busy_marker: &str,
         alert_marker: &str,
     ) -> Option<String> {
-        let marker = match self.state {
+        let marker = match self {
             TabActivityState::Idle => return None,
             TabActivityState::Busy => busy_marker,
             TabActivityState::Alert => alert_marker,
@@ -526,7 +521,7 @@ impl TabActivityOverlay {
     }
 }
 
-fn parse_tab_activity_snapshot(payload: &str) -> Option<HashMap<usize, TabActivityOverlay>> {
+fn parse_tab_activity_snapshot(payload: &str) -> Option<HashMap<usize, TabActivityState>> {
     let snapshot = serde_json::from_str::<TabActivitySnapshot>(payload).ok()?;
     if snapshot.schema_version != 1 {
         return None;
@@ -536,14 +531,7 @@ fn parse_tab_activity_snapshot(payload: &str) -> Option<HashMap<usize, TabActivi
         snapshot
             .tabs
             .into_iter()
-            .map(|tab| {
-                (
-                    tab.tab_id,
-                    TabActivityOverlay {
-                        state: tab.activity_state,
-                    },
-                )
-            })
+            .map(|tab| (tab.tab_id, tab.activity_state))
             .collect(),
     )
 }
