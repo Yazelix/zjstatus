@@ -331,12 +331,11 @@ impl TabsWidget {
         tab_activity_by_id: &HashMap<usize, TabActivityState>,
     ) -> String {
         let formatters = self.select_format(tab, mode);
-        let mut output = "".to_owned();
+        let mut output = String::new();
+        let tab_name = self.rendered_tab_name(tab, mode, tab_activity_by_id);
 
         for f in formatters.iter() {
             let mut content = f.content.clone();
-
-            let tab_name = self.rendered_tab_name(tab, mode, tab_activity_by_id);
 
             if content.contains("{name}") {
                 content = content.replace("{name}", &tab_name);
@@ -375,10 +374,10 @@ impl TabsWidget {
 
             content = self.replace_indicators(content, tab, panes);
 
-            output = format!("{}{}", output, f.format_string(&content));
+            output.push_str(&f.format_string(&content));
         }
 
-        output.to_owned()
+        output
     }
 
     fn rendered_tab_name(
@@ -478,19 +477,19 @@ impl TabsWidget {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Deserialize)]
 struct TabActivitySnapshot {
     schema_version: i32,
     tabs: Vec<TabActivitySnapshotTab>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Deserialize)]
 struct TabActivitySnapshotTab {
     tab_id: usize,
     activity_state: TabActivityState,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum TabActivityState {
     Idle,
