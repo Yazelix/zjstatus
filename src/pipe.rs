@@ -1,5 +1,3 @@
-use std::ops::Sub;
-
 use chrono::{Duration, Local};
 
 use crate::{
@@ -26,60 +24,42 @@ use crate::{
 #[tracing::instrument(skip(state))]
 pub fn parse_protocol(state: &mut ZellijState, input: &str) -> bool {
     tracing::debug!("parsing protocol");
-    let lines = input.split('\n').collect::<Vec<&str>>();
-
     let mut should_render = false;
-    for line in lines {
-        let line_renders = process_line(state, line);
-
-        if line_renders {
-            should_render = true;
-        }
+    for line in input.split('\n') {
+        should_render |= process_line(state, line);
     }
-
     should_render
 }
 
 #[tracing::instrument(skip_all)]
 fn process_line(state: &mut ZellijState, line: &str) -> bool {
-    let parts = line.splitn(4, "::").collect::<Vec<&str>>();
-
-    if parts.len() < 3 {
+    let mut parts = line.splitn(4, "::");
+    let (Some("zjstatus"), Some(command), Some(argument)) =
+        (parts.next(), parts.next(), parts.next())
+    else {
         return false;
-    }
+    };
 
-    if parts[0] != "zjstatus" {
-        return false;
-    }
+    tracing::debug!("command: {command}");
 
-    tracing::debug!("command: {}", parts[1]);
-
-    let mut should_render = false;
-    #[allow(clippy::single_match)]
-    match parts[1] {
+    match command {
         "rerun" => {
-            rerun_command(state, parts[2]);
-
-            should_render = true;
+            rerun_command(state, argument);
+            true
         }
         "notify" => {
-            notify(state, parts[2]);
-
-            should_render = true;
+            notify(state, argument);
+            true
         }
         "pipe" => {
-            if parts.len() < 4 {
+            let Some(content) = parts.next() else {
                 return false;
-            }
-
-            pipe(state, parts[2], parts[3]);
-
-            should_render = true;
+            };
+            pipe(state, argument, content);
+            true
         }
-        _ => {}
+        _ => false,
     }
-
-    should_render
 }
 
 fn pipe(state: &mut ZellijState, name: &str, content: &str) {
@@ -97,25 +77,16 @@ fn notify(state: &mut ZellijState, message: &str) {
 }
 
 fn rerun_command(state: &mut ZellijState, command_name: &str) {
-    let command_result = state.command_results.get(command_name);
-
-    if command_result.is_none() {
+    let Some(command_result) = state.command_results.get_mut(command_name) else {
         return;
-    }
+    };
 
-    let mut command_result = command_result.unwrap().clone();
-
-    let ts = Sub::<Duration>::sub(Local::now(), Duration::try_days(1).unwrap());
+    let ts = Local::now() - Duration::try_days(1).unwrap();
 
     command_result.context.insert(
         "timestamp".to_string(),
         ts.format(TIMESTAMP_FORMAT).to_string(),
     );
-
-    state.command_results.remove(command_name);
-    state
-        .command_results
-        .insert(command_name.to_string(), command_result.clone());
 }
 
 #[cfg(test)]
@@ -123,14 +94,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pipe_protocol_preserves_separator_text_in_content() {
+    fn pipe_protocol_processes_all_lines_and_preserves_separator_text() {
         let mut state = ZellijState::default();
 
         assert!(parse_protocol(
             &mut state,
-            r#"zjstatus::pipe::pipe_tab_activity::{"base_name":"agent::plan"}"#
+            "zjstatus::pipe::first::ready\n\
+             zjstatus::pipe::pipe_tab_activity::{\"base_name\":\"agent::plan\"}"
         ));
 
+        assert_eq!(
+            state.pipe_results.get("first").map(String::as_str),
+            Some("ready")
+        );
         assert_eq!(
             state
                 .pipe_results

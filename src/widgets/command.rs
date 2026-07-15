@@ -434,6 +434,7 @@ fn commandline_parser(input: &str) -> Vec<String> {
 mod test {
     use super::*;
     use rstest::rstest;
+    use uuid::Uuid;
 
     #[test]
     pub fn test_commandline_parser() {
@@ -455,11 +456,11 @@ mod test {
 
     #[rstest]
     // no result, interval 1 second
-    #[case("missing_result_interval", 1, &ZellijState::default(), true)]
+    #[case(1, &ZellijState::default(), true)]
     // only run once without a result
-    #[case("missing_result_once", 0, &ZellijState::default(), true)]
+    #[case(0, &ZellijState::default(), true)]
     // do not run with run once and result
-    #[case("existing_result_once", 0, &ZellijState {
+    #[case(0, &ZellijState {
         command_results: BTreeMap::from([(
             "test".to_owned(),
             CommandResult::default(),
@@ -467,7 +468,7 @@ mod test {
         ..ZellijState::default()
     }, false)]
     // run if interval is exceeded
-    #[case("expired_result_interval", 1, &ZellijState {
+    #[case(1, &ZellijState {
         command_results: BTreeMap::from([(
             "test".to_owned(),
             CommandResult{
@@ -478,7 +479,7 @@ mod test {
         ..ZellijState::default()
     }, true)]
     // do not run if interval is not exceeded
-    #[case("fresh_result_interval", 1, &ZellijState {
+    #[case(1, &ZellijState {
         command_results: BTreeMap::from([(
             "test".to_owned(),
             CommandResult{
@@ -489,14 +490,12 @@ mod test {
         ..ZellijState::default()
     }, false)]
     pub fn test_run_command_if_needed(
-        #[case] lock_namespace: &str,
         #[case] interval: i64,
         #[case] state: &ZellijState,
         #[case] expected: bool,
     ) {
         let mut state = state.clone();
-        state.plugin_uuid = format!("zjstatus-command-test-{lock_namespace}");
-        release("test", state.clone());
+        state.plugin_uuid = Uuid::new_v4().to_string();
 
         let res = run_command_if_needed(
             CommandConfig {
