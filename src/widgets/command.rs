@@ -594,11 +594,7 @@ mod test {
         #[case] expected: bool,
     ) {
         let mut state = state.clone();
-        state.plugin_uuid = format!(
-            "zjstatus-command-test-{}-{}",
-            std::process::id(),
-            lock_namespace
-        );
+        state.plugin_uuid = format!("zjstatus-command-test-{lock_namespace}");
         release_command_lock(&state, "test");
 
         let res = run_command_if_needed(
