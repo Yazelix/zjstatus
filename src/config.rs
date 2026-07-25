@@ -5,7 +5,7 @@ use regex::Regex;
 use zellij_tile::prelude::*;
 
 use crate::{
-    border::{parse_border_config, BorderConfig, BorderPosition},
+    border::{BorderConfig, BorderPosition, parse_border_config},
     render::FormattedPart,
     widgets::{command::CommandResult, notification, widget::Widget},
 };
@@ -53,6 +53,45 @@ pub enum UpdateEventMask {
     Command = 0b00000100,
     Session = 0b00001000,
     None = 0b00000000,
+}
+
+const HOST_THEME_MODE: &str = "host_theme_mode";
+const HOST_THEME_DARK_PREFIX: &str = "host_theme_dark_";
+const HOST_THEME_LIGHT_PREFIX: &str = "host_theme_light_";
+
+pub fn host_theme_configuration(
+    config: &BTreeMap<String, String>,
+    mode: HostTerminalThemeMode,
+) -> BTreeMap<String, String> {
+    let prefix = match mode {
+        HostTerminalThemeMode::Dark => HOST_THEME_DARK_PREFIX,
+        HostTerminalThemeMode::Light => HOST_THEME_LIGHT_PREFIX,
+    };
+    let mut themed = config.clone();
+    for (key, value) in config {
+        if let Some(key) = key.strip_prefix(prefix) {
+            themed.insert(key.to_owned(), value.clone());
+        }
+    }
+    themed.insert(
+        HOST_THEME_MODE.to_owned(),
+        match mode {
+            HostTerminalThemeMode::Dark => "dark",
+            HostTerminalThemeMode::Light => "light",
+        }
+        .to_owned(),
+    );
+    themed
+}
+
+pub fn configured_host_theme_mode(
+    config: &BTreeMap<String, String>,
+) -> Option<HostTerminalThemeMode> {
+    match config.get(HOST_THEME_MODE).map(String::as_str) {
+        Some("dark") => Some(HostTerminalThemeMode::Dark),
+        Some("light") => Some(HostTerminalThemeMode::Light),
+        _ => None,
+    }
 }
 
 pub fn event_mask_from_widget_name(name: &str) -> u8 {
@@ -546,5 +585,50 @@ mod test {
                 ..Default::default()
             },
         )
+    }
+
+    #[test]
+    fn host_theme_overlays_only_the_selected_palette() {
+        let config = BTreeMap::from([
+            ("format_right".to_owned(), "base".to_owned()),
+            ("host_theme_mode".to_owned(), "dark".to_owned()),
+            (
+                "host_theme_dark_format_right".to_owned(),
+                "dark bar".to_owned(),
+            ),
+            (
+                "host_theme_light_format_right".to_owned(),
+                "light bar".to_owned(),
+            ),
+            (
+                "host_theme_light_tab_normal".to_owned(),
+                "light tab".to_owned(),
+            ),
+        ]);
+
+        let dark = host_theme_configuration(&config, HostTerminalThemeMode::Dark);
+        assert_eq!(
+            dark.get("format_right").map(String::as_str),
+            Some("dark bar")
+        );
+        assert_eq!(dark.get("tab_normal"), None);
+        assert_eq!(
+            configured_host_theme_mode(&dark),
+            Some(HostTerminalThemeMode::Dark)
+        );
+
+        let light = host_theme_configuration(&config, HostTerminalThemeMode::Light);
+        assert_eq!(
+            light.get("format_right").map(String::as_str),
+            Some("light bar")
+        );
+        assert_eq!(
+            light.get("tab_normal").map(String::as_str),
+            Some("light tab")
+        );
+        assert_eq!(
+            configured_host_theme_mode(&light),
+            Some(HostTerminalThemeMode::Light)
+        );
     }
 }

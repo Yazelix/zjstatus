@@ -77,17 +77,21 @@ impl ZellijPlugin for State {
             EventType::TabUpdate,
             EventType::SessionUpdate,
             EventType::RunCommandResult,
+            EventType::HostTerminalThemeChanged,
         ]);
         set_timeout(REFRESH_INTERVAL_SECONDS);
 
-        self.module_config = match ModuleConfig::new(&configuration) {
+        let active_configuration = config::configured_host_theme_mode(&configuration)
+            .map(|mode| config::host_theme_configuration(&configuration, mode))
+            .unwrap_or_else(|| configuration.clone());
+        self.module_config = match ModuleConfig::new(&active_configuration) {
             Ok(mc) => mc,
             Err(e) => {
                 self.err = Some(e);
                 return;
             }
         };
-        self.widget_map = register_widgets(&configuration);
+        self.widget_map = register_widgets(&active_configuration);
         self.userspace_configuration = configuration;
         self.pending_events = Vec::new();
         self.got_permissions = false;
@@ -306,9 +310,29 @@ impl State {
 
                 should_render = true;
             }
+            Event::HostTerminalThemeChanged(mode) => {
+                tracing::Span::current().record("event_type", "Event::HostTerminalThemeChanged");
+                should_render = self.apply_host_theme(mode);
+            }
             _ => (),
         };
         should_render
+    }
+
+    fn apply_host_theme(&mut self, mode: HostTerminalThemeMode) -> bool {
+        if config::configured_host_theme_mode(&self.userspace_configuration).is_none() {
+            return false;
+        }
+        let configuration = config::host_theme_configuration(&self.userspace_configuration, mode);
+        match ModuleConfig::new(&configuration) {
+            Ok(module_config) => {
+                self.module_config = module_config;
+                self.widget_map = register_widgets(&configuration);
+                self.err = None;
+            }
+            Err(error) => self.err = Some(error),
+        }
+        true
     }
 }
 
