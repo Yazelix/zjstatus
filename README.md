@@ -1,5 +1,15 @@
 <h1 align="center">zjstatus & zjframes</h1>
 
+## Yazelix fork
+
+The upstream baseline is `dj95/zjstatus` commit `17609e4` (including native bell
+tab formatting). The maintained delta provides host-theme configuration
+(`a9859a9`), separator-safe pipe payloads, and command-test isolation. Tab
+rendering follows upstream; the former execution/activity overlay is removed.
+The remaining runtime patches are removable when upstream supplies equivalent
+host-theme switching and pipe handling. Native tab and stale-payload tests guard
+that boundary; Nova Bar owns palettes, and Radar owns agent activity.
+
 <p align="center">
   A configurable and themable statusbar for zellij.
   <br><br>

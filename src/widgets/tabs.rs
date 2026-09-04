@@ -1,9 +1,4 @@
-use std::{
-    cmp,
-    collections::{BTreeMap, HashMap},
-};
-
-use serde::Deserialize;
+use std::{cmp, collections::BTreeMap};
 
 use zellij_tile::{
     prelude::{InputMode, ModeInfo, PaneInfo, PaneManifest, TabInfo},
@@ -34,9 +29,6 @@ pub struct TabsWidget {
     tab_truncate_start_format: Vec<FormattedPart>,
     tab_truncate_end_format: Vec<FormattedPart>,
     tab_zero_based_index: bool,
-    activity_pipe_name: Option<String>,
-    activity_busy_marker: String,
-    activity_alert_marker: String,
 }
 
 impl TabsWidget {
@@ -104,19 +96,6 @@ impl TabsWidget {
             None => false,
         };
 
-        let activity_pipe_name = config
-            .get("tab_activity_pipe_name")
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty());
-        let activity_busy_marker = config
-            .get("tab_activity_busy_marker")
-            .cloned()
-            .unwrap_or_else(|| "·".to_owned());
-        let activity_alert_marker = config
-            .get("tab_activity_alert_marker")
-            .cloned()
-            .unwrap_or_else(|| "✓".to_owned());
-
         let separator = config
             .get("tab_separator")
             .map(|s| FormattedPart::from_format_string(s, config));
@@ -147,9 +126,6 @@ impl TabsWidget {
             tab_truncate_start_format,
             tab_truncate_end_format,
             tab_zero_based_index,
-            activity_pipe_name,
-            activity_busy_marker,
-            activity_alert_marker,
         }
     }
 }
@@ -158,7 +134,6 @@ impl Widget for TabsWidget {
     fn process(&self, _name: &str, state: &ZellijState) -> String {
         let mut output = "".to_owned();
         let mut counter = 0;
-        let tab_activity_by_id = self.tab_activity_by_id(state);
 
         let (truncated_start, truncated_end, tabs) =
             get_tab_window(&state.tabs, self.tab_display_count);
@@ -176,7 +151,7 @@ impl Widget for TabsWidget {
         }
 
         for tab in &tabs {
-            let content = self.render_tab(tab, &state.panes, &state.mode, &tab_activity_by_id);
+            let content = self.render_tab(tab, &state.panes, &state.mode);
             counter += 1;
 
             output = format!("{}{}", output, content);
@@ -206,7 +181,6 @@ impl Widget for TabsWidget {
     fn process_click(&self, _name: &str, state: &ZellijState, pos: usize) {
         let mut offset = 0;
         let mut counter = 0;
-        let tab_activity_by_id = self.tab_activity_by_id(state);
 
         let (truncated_start, truncated_end, tabs) =
             get_tab_window(&state.tabs, self.tab_display_count);
@@ -238,8 +212,7 @@ impl Widget for TabsWidget {
         for tab in &tabs {
             counter += 1;
 
-            let mut rendered_content =
-                self.render_tab(tab, &state.panes, &state.mode, &tab_activity_by_id);
+            let mut rendered_content = self.render_tab(tab, &state.panes, &state.mode);
 
             if counter < tabs.len()
                 && let Some(sep) = &self.separator
@@ -323,22 +296,23 @@ impl TabsWidget {
         &self.normal_tab_format
     }
 
-    fn render_tab(
-        &self,
-        tab: &TabInfo,
-        panes: &PaneManifest,
-        mode: &ModeInfo,
-        tab_activity_by_id: &HashMap<usize, TabActivityState>,
-    ) -> String {
+    fn render_tab(&self, tab: &TabInfo, panes: &PaneManifest, mode: &ModeInfo) -> String {
         let formatters = self.select_format(tab, mode);
-        let mut output = String::new();
-        let tab_name = self.rendered_tab_name(tab, mode, tab_activity_by_id);
+        let mut output = "".to_owned();
 
         for f in formatters.iter() {
             let mut content = f.content.clone();
 
+            let tab_name = match mode.mode {
+                InputMode::RenameTab => match tab.name.is_empty() {
+                    true => "Enter name...",
+                    false => tab.name.as_str(),
+                },
+                _name => tab.name.as_str(),
+            };
+
             if content.contains("{name}") {
-                content = content.replace("{name}", &tab_name);
+                content = content.replace("{name}", tab_name);
             }
 
             if content.contains("{index}") {
@@ -374,43 +348,10 @@ impl TabsWidget {
 
             content = self.replace_indicators(content, tab, panes);
 
-            output.push_str(&f.format_string(&content));
+            output = format!("{}{}", output, f.format_string(&content));
         }
 
-        output
-    }
-
-    fn rendered_tab_name(
-        &self,
-        tab: &TabInfo,
-        mode: &ModeInfo,
-        tab_activity_by_id: &HashMap<usize, TabActivityState>,
-    ) -> String {
-        if mode.mode == InputMode::RenameTab {
-            return match tab.name.is_empty() {
-                true => "Enter name...".to_owned(),
-                false => tab.name.clone(),
-            };
-        }
-
-        tab_activity_by_id
-            .get(&tab.tab_id)
-            .and_then(|activity_state| {
-                activity_state.decorated_name(
-                    &tab.name,
-                    &self.activity_busy_marker,
-                    &self.activity_alert_marker,
-                )
-            })
-            .unwrap_or_else(|| tab.name.clone())
-    }
-
-    fn tab_activity_by_id(&self, state: &ZellijState) -> HashMap<usize, TabActivityState> {
-        self.activity_pipe_name
-            .as_ref()
-            .and_then(|name| state.pipe_results.get(name))
-            .and_then(|payload| parse_tab_activity_snapshot(payload))
-            .unwrap_or_default()
+        output.to_owned()
     }
 
     fn replace_indicators(&self, content: String, tab: &TabInfo, panes: &PaneManifest) -> String {
@@ -477,64 +418,6 @@ impl TabsWidget {
     }
 }
 
-#[derive(Deserialize)]
-struct TabActivitySnapshot {
-    schema_version: i32,
-    tabs: Vec<TabActivitySnapshotTab>,
-}
-
-#[derive(Deserialize)]
-struct TabActivitySnapshotTab {
-    tab_id: usize,
-    activity_state: TabActivityState,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum TabActivityState {
-    Idle,
-    Busy,
-    Alert,
-}
-
-impl TabActivityState {
-    fn decorated_name(
-        &self,
-        fallback_name: &str,
-        busy_marker: &str,
-        alert_marker: &str,
-    ) -> Option<String> {
-        let marker = match self {
-            TabActivityState::Idle => return None,
-            TabActivityState::Busy => busy_marker,
-            TabActivityState::Alert => alert_marker,
-        };
-        if marker.is_empty() {
-            return None;
-        }
-
-        match fallback_name {
-            "" => Some(marker.to_owned()),
-            base_name => Some(format!("{base_name} {marker}")),
-        }
-    }
-}
-
-fn parse_tab_activity_snapshot(payload: &str) -> Option<HashMap<usize, TabActivityState>> {
-    let snapshot = serde_json::from_str::<TabActivitySnapshot>(payload).ok()?;
-    if snapshot.schema_version != 1 {
-        return None;
-    }
-
-    Some(
-        snapshot
-            .tabs
-            .into_iter()
-            .map(|tab| (tab.tab_id, tab.activity_state))
-            .collect(),
-    )
-}
-
 pub fn get_tab_window(
     tabs: &Vec<TabInfo>,
     max_count: Option<usize>,
@@ -577,14 +460,12 @@ pub fn get_tab_window(
 
 #[cfg(test)]
 mod test {
-    use std::collections::BTreeMap;
-
-    use zellij_tile::prelude::{InputMode, ModeInfo, TabInfo};
-
-    use crate::{config::ZellijState, widgets::widget::Widget};
+    use zellij_tile::prelude::TabInfo;
 
     use super::{TabsWidget, get_tab_window};
+    use crate::{config::ZellijState, widgets::widget::Widget};
     use rstest::rstest;
+    use std::collections::BTreeMap;
 
     fn tab(tab_id: usize, position: usize, name: &str, active: bool) -> TabInfo {
         TabInfo {
@@ -597,7 +478,7 @@ mod test {
     }
 
     #[test]
-    fn tabs_widget_renders_activity_from_pipe_without_renaming_tabs() {
+    fn tabs_ignore_legacy_activity_payloads() {
         let widget = TabsWidget::new(&BTreeMap::from([
             ("tab_normal".to_owned(), "n{index}:{name} ".to_owned()),
             ("tab_active".to_owned(), "a{index}:{name} ".to_owned()),
@@ -615,55 +496,8 @@ mod test {
             ..ZellijState::default()
         };
 
-        assert_eq!(widget.process("tabs", &state), "a1:editor n2:agent · ");
+        assert_eq!(widget.process("tabs", &state), "a1:editor n2:agent ");
         assert_eq!(state.tabs[1].name, "agent");
-    }
-
-    #[test]
-    fn tabs_widget_uses_raw_name_during_tab_rename() {
-        let widget = TabsWidget::new(&BTreeMap::from([
-            ("tab_active".to_owned(), "a{index}:{name} ".to_owned()),
-            ("tab_rename".to_owned(), "rename {index} {name} ".to_owned()),
-            (
-                "tab_activity_pipe_name".to_owned(),
-                "pipe_tab_activity".to_owned(),
-            ),
-        ]));
-        let state = ZellijState {
-            mode: ModeInfo {
-                mode: InputMode::RenameTab,
-                ..ModeInfo::default()
-            },
-            tabs: vec![tab(20, 1, "draft", true)],
-            pipe_results: BTreeMap::from([(
-                "pipe_tab_activity".to_owned(),
-                r#"{"schema_version":1,"tabs":[{"tab_id":20,"tab_position":1,"base_name":"agent","active":true,"activity_state":"alert"}]}"#.to_owned(),
-            )]),
-            ..ZellijState::default()
-        };
-
-        assert_eq!(widget.process("tabs", &state), "rename 2 draft ");
-    }
-
-    #[test]
-    fn tabs_widget_uses_live_tab_name_when_pipe_base_name_is_stale() {
-        let widget = TabsWidget::new(&BTreeMap::from([
-            ("tab_normal".to_owned(), "n{index}:{name} ".to_owned()),
-            (
-                "tab_activity_pipe_name".to_owned(),
-                "pipe_tab_activity".to_owned(),
-            ),
-        ]));
-        let state = ZellijState {
-            tabs: vec![tab(20, 1, "renamed", false)],
-            pipe_results: BTreeMap::from([(
-                "pipe_tab_activity".to_owned(),
-                r#"{"schema_version":1,"tabs":[{"tab_id":20,"tab_position":1,"base_name":"agent","active":false,"activity_state":"busy"}]}"#.to_owned(),
-            )]),
-            ..ZellijState::default()
-        };
-
-        assert_eq!(widget.process("tabs", &state), "n2:renamed · ");
     }
 
     #[rstest]
