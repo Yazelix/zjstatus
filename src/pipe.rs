@@ -100,7 +100,7 @@ mod tests {
         assert!(parse_protocol(
             &mut state,
             "zjstatus::pipe::first::ready\n\
-             zjstatus::pipe::pipe_tab_activity::{\"base_name\":\"agent::plan\"}"
+             zjstatus::pipe::workspace::agent::plan"
         ));
 
         assert_eq!(
@@ -108,11 +108,8 @@ mod tests {
             Some("ready")
         );
         assert_eq!(
-            state
-                .pipe_results
-                .get("pipe_tab_activity")
-                .map(String::as_str),
-            Some(r#"{"base_name":"agent::plan"}"#)
+            state.pipe_results.get("workspace").map(String::as_str),
+            Some("agent::plan")
         );
     }
 }
