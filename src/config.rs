@@ -286,6 +286,12 @@ impl ModuleConfig {
         let mut center = render_parts(&mut self.center_parts, widgets, state);
         let mut right = RenderedParts::default();
         if let Some(segments) = &mut self.right_segments {
+            // Hidden widgets still receive updates and keep their command refresh cadence.
+            let segments: Vec<_> = segments
+                .iter_mut()
+                .map(|segment| render_parts(segment, widgets, state))
+                .collect();
+            let separator = render_parts(&mut self.right_separator, widgets, state);
             let left_width = console::measure_text_width(&left.output);
             if left_width > state.cols {
                 let tabs_width: usize = left
@@ -304,15 +310,14 @@ impl ModuleConfig {
                 let available = state
                     .cols
                     .saturating_sub(left_width + console::measure_text_width(&center.output));
-                for segment in segments {
-                    let part = render_parts(segment, widgets, state);
+                for part in segments {
                     if console::strip_ansi_codes(&part.output).trim().is_empty() {
                         continue;
                     }
                     let separator = if right.output.is_empty() {
                         RenderedParts::default()
                     } else {
-                        render_parts(&mut self.right_separator, widgets, state)
+                        separator.clone()
                     };
                     if console::measure_text_width(&right.output)
                         + console::measure_text_width(&separator.output)
@@ -518,6 +523,46 @@ fn parts_from_config(
 mod test {
     use super::*;
     use anstyle::{Effects, RgbColor};
+
+    #[test]
+    fn hidden_segments_restore_updates_received_while_narrow() {
+        use crate::widgets::session::SessionWidget;
+        let config = BTreeMap::from([
+            ("format_left".into(), "tabs".into()),
+            ("format_right".into(), "first{segment}{session}".into()),
+            ("format_right_separator".into(), " | ".into()),
+            ("format_precedence".into(), "lrc".into()),
+            ("format_hide_on_overlength".into(), "true".into()),
+        ]);
+        let widgets: BTreeMap<String, Arc<dyn Widget>> = BTreeMap::from([(
+            "session".into(),
+            Arc::new(SessionWidget::new(&config)) as Arc<dyn Widget>,
+        )]);
+        for narrow in [3, 6] {
+            let mut renderer = ModuleConfig::new(&config).unwrap();
+            let mut state = ZellijState {
+                cols: 30,
+                ..Default::default()
+            };
+            state.mode.session_name = Some("old".into());
+            assert!(
+                renderer
+                    .render_bar(state.clone(), widgets.clone())
+                    .contains("old")
+            );
+            state.cols = narrow;
+            state.mode.session_name = Some("new".into());
+            state.cache_mask = UpdateEventMask::Mode as u8;
+            renderer.render_bar(state.clone(), widgets.clone());
+            state.cols = 30;
+            state.cache_mask = 0;
+            let output = renderer.render_bar(state, widgets.clone());
+            assert!(
+                console::strip_ansi_codes(&output).contains("first | new"),
+                "width {narrow}: {output:?}"
+            );
+        }
+    }
 
     #[test]
     fn right_segments_yield_to_tabs_and_keep_visible_clicks() {

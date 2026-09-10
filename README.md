@@ -26,7 +26,8 @@ format_hide_on_overlength "true"
 ```
 
 The leftmost segments survive longest. Empty output takes no space or separator;
-whole segments disappear from the right and return as width permits. If tabs
+whole segments disappear from the right and return as width permits. Hidden
+widgets keep receiving updates and command refreshes. If tabs
 alone overflow, the active tab stays in a smaller native window. Its name is
 shortened only after neighboring tabs and hidden-tab counts have been removed.
 Indices and indicators take precedence over the name where space permits.

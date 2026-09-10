@@ -40,7 +40,7 @@ pub struct FormattedPart {
     pub cached_tab_width: Option<usize>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct RenderedParts {
     pub output: String,
     pub hits: Vec<(String, std::ops::Range<usize>)>,
@@ -337,17 +337,7 @@ fn cache_mask_from_content(content: &str) -> u8 {
     for widget in WIDGET_REGEX.captures_iter(content) {
         let match_name = widget.get(0).unwrap().as_str();
         let widget_key = match_name.trim_matches(|c| c == '{' || c == '}');
-        let mut widget_key_name = widget_key;
-
-        if widget_key.starts_with("command_") {
-            widget_key_name = "command";
-        }
-
-        if widget_key.starts_with("pipe_") {
-            widget_key_name = "pipe";
-        }
-
-        output |= event_mask_from_widget_name(widget_key_name);
+        output |= event_mask_from_widget_name(widget_type(widget_key));
     }
     output
 }
