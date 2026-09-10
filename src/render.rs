@@ -37,6 +37,66 @@ pub struct FormattedPart {
     pub cache_mask: u8,
     pub cached_content: String,
     pub cache: BTreeMap<String, String>,
+    pub cached_tab_width: Option<usize>,
+}
+
+#[derive(Default, Debug)]
+pub struct RenderedParts {
+    pub output: String,
+    pub hits: Vec<(String, std::ops::Range<usize>)>,
+}
+
+impl RenderedParts {
+    pub fn append(&mut self, other: Self) {
+        let offset = console::measure_text_width(&self.output);
+        self.hits.extend(
+            other
+                .hits
+                .into_iter()
+                .map(|(name, range)| (name, range.start + offset..range.end + offset)),
+        );
+        self.output.push_str(&other.output);
+    }
+}
+
+pub fn widget_type(name: &str) -> &str {
+    if name.starts_with("command_") {
+        "command"
+    } else if name.starts_with("pipe_") {
+        "pipe"
+    } else {
+        name
+    }
+}
+
+pub fn render_parts(
+    parts: &mut [FormattedPart],
+    widgets: &BTreeMap<String, Arc<dyn Widget>>,
+    state: &ZellijState,
+) -> RenderedParts {
+    let mut rendered = RenderedParts::default();
+    for part in parts {
+        let output = part.format_string_with_widgets(widgets, state);
+        let mut offset = console::measure_text_width(&rendered.output);
+        let mut end = 0;
+        for token in WIDGET_REGEX.find_iter(&part.content) {
+            offset += console::measure_text_width(&part.content[end..token.start()]);
+            let name = &token.as_str()[1..token.as_str().len() - 1];
+            // Use the exact expansion used for drawing, including cache hits.
+            let width = part
+                .cache
+                .get(name)
+                .map(|s| console::measure_text_width(s))
+                .unwrap_or(0);
+            rendered
+                .hits
+                .push((name.to_owned(), offset..offset + width));
+            offset += width;
+            end = token.end();
+        }
+        rendered.output.push_str(&output);
+    }
+    rendered
 }
 
 #[cached(
@@ -187,8 +247,13 @@ impl FormattedPart {
         state: &ZellijState,
     ) -> String {
         let skip_cache = self.cache_mask & UpdateEventMask::Always as u8 != 0;
+        let width_changed = self.cached_tab_width != state.tab_width_limit;
 
-        if !skip_cache && self.cache_mask & state.cache_mask == 0 && !self.cache.is_empty() {
+        if !width_changed
+            && !skip_cache
+            && self.cache_mask & state.cache_mask == 0
+            && !self.cache.is_empty()
+        {
             tracing::debug!(msg = "hit", typ = "format_string", format = self.content);
             return self.cached_content.to_owned();
         }
@@ -199,19 +264,12 @@ impl FormattedPart {
         for widget in WIDGET_REGEX.captures_iter(&self.content) {
             let match_name = widget.get(0).unwrap().as_str();
             let widget_key = match_name.trim_matches(|c| c == '{' || c == '}');
-            let mut widget_key_name = widget_key;
-
-            if widget_key.starts_with("command_") {
-                widget_key_name = "command";
-            }
-
-            if widget_key.starts_with("pipe_") {
-                widget_key_name = "pipe";
-            }
+            let widget_key_name = widget_type(widget_key);
 
             let widget_mask = event_mask_from_widget_name(widget_key_name);
             let skip_widget_cache = widget_mask & UpdateEventMask::Always as u8 != 0;
-            if !skip_widget_cache
+            if !width_changed
+                && !skip_widget_cache
                 && widget_mask & state.cache_mask == 0
                 && let Some(res) = self.cache.get(widget_key)
             {
@@ -240,6 +298,7 @@ impl FormattedPart {
 
         let res = self.format_string(&output);
         self.cached_content.clone_from(&res);
+        self.cached_tab_width = state.tab_width_limit;
 
         res
     }
@@ -268,6 +327,7 @@ impl Default for FormattedPart {
             cache_mask: 0,
             cached_content: "".to_owned(),
             cache: BTreeMap::new(),
+            cached_tab_width: None,
         }
     }
 }

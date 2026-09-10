@@ -103,6 +103,7 @@ impl ZellijPlugin for State {
 
         self.state = ZellijState {
             cols: 0,
+            tab_width_limit: None,
             command_results: BTreeMap::new(),
             pipe_results: BTreeMap::new(),
             mode: ModeInfo::default(),

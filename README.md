@@ -4,11 +4,41 @@
 
 The upstream baseline is `dj95/zjstatus` commit `17609e4` (including native bell
 tab formatting). The maintained delta provides host-theme configuration
-(`a9859a9`), separator-safe pipe payloads, and command-test isolation. Tab
-rendering follows upstream; the former execution/activity overlay is removed.
+(`a9859a9`), separator-safe pipe payloads, command-test isolation, and opt-in
+tabs-first widget fitting. Native tab identity and indicators are retained;
+the former execution/activity overlay is removed.
 The remaining runtime patches are removable when upstream supplies equivalent
 host-theme switching and pipe handling. Native tab and stale-payload tests guard
 that boundary; Nova Bar owns palettes, and Radar owns agent activity.
+
+### Tabs-first fitting (BAR-WIDTH-001)
+
+For tabs on the left and an empty center, `format_right_separator` enables
+complete right-side segments delimited by `{segment}` in `format_right`:
+
+```kdl
+format_left "{tabs}"
+format_center ""
+format_right "{command_quota}{segment}{command_cpu}{segment}nova"
+format_right_separator " #[fg=gray]• "
+format_precedence "lrc"
+format_hide_on_overlength "true"
+```
+
+The leftmost segments survive longest. Empty output takes no space or separator;
+whole segments disappear from the right and return as width permits. If tabs
+alone overflow, the active tab stays in a smaller native window. Its name is
+shortened only after neighboring tabs and hidden-tab counts have been removed.
+Indices and indicators take precedence over the name where space permits.
+`tab_display_count` remains the maximum visible count. Drawing and clicks use
+the same measured layout, including resize-only updates. Without the separator
+key, existing full-section formatting remains in use.
+
+The mechanisms were reviewed against upstream [#237](https://github.com/dj95/zjstatus/pull/237)
+and [#274](https://github.com/dj95/zjstatus/pull/274). Neither patch is imported:
+the former reserves widgets before tabs, and the latter truncates pipe text and
+adds scrolling. This local delta is removable when upstream provides equivalent
+whole-segment fitting, native tab budgeting and matching click geometry.
 
 <p align="center">
   A configurable and themable statusbar for zellij.

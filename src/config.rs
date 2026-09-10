@@ -1,12 +1,11 @@
 use std::{collections::BTreeMap, str::FromStr, sync::Arc};
 
 use itertools::Itertools;
-use regex::Regex;
 use zellij_tile::prelude::*;
 
 use crate::{
     border::{BorderConfig, BorderPosition, parse_border_config},
-    render::FormattedPart,
+    render::{FormattedPart, RenderedParts, render_parts, widget_type},
     widgets::{command::CommandResult, notification, widget::Widget},
 };
 use chrono::{DateTime, Local};
@@ -14,6 +13,7 @@ use chrono::{DateTime, Local};
 #[derive(Default, Debug, Clone)]
 pub struct ZellijState {
     pub cols: usize,
+    pub tab_width_limit: Option<usize>,
     pub command_results: BTreeMap<String, CommandResult>,
     pub pipe_results: BTreeMap<String, String>,
     pub mode: ModeInfo,
@@ -118,6 +118,8 @@ pub struct ModuleConfig {
     pub center_parts: Vec<FormattedPart>,
     pub right_parts_config: String,
     pub right_parts: Vec<FormattedPart>,
+    pub right_segments: Option<Vec<Vec<FormattedPart>>>,
+    pub right_separator: Vec<FormattedPart>,
     pub format_space: FormattedPart,
     pub hide_frame_for_single_pane: bool,
     pub hide_frame_except_for_search: bool,
@@ -203,7 +205,18 @@ impl ModuleConfig {
             center_parts_config: center_parts_config.to_owned(),
             center_parts: parts_from_config(Some(&center_parts_config.to_owned()), config),
             right_parts_config: right_parts_config.to_owned(),
-            right_parts: parts_from_config(Some(&right_parts_config.to_owned()), config),
+            right_parts: if config.contains_key("format_right_separator") {
+                vec![]
+            } else {
+                parts_from_config(Some(&right_parts_config.to_owned()), config)
+            },
+            right_segments: config.get("format_right_separator").map(|_| {
+                right_parts_config
+                    .split("{segment}")
+                    .map(|s| FormattedPart::multiple_from_format_string(s, config))
+                    .collect()
+            }),
+            right_separator: parts_from_config(config.get("format_right_separator"), config),
             format_space: FormattedPart::from_format_string(format_space_config, config),
             hide_frame_for_single_pane,
             hide_frame_except_for_search,
@@ -218,202 +231,129 @@ impl ModuleConfig {
 
     pub fn handle_mouse_action(
         &mut self,
-        state: ZellijState,
+        mut state: ZellijState,
         mouse: Mouse,
         widget_map: BTreeMap<String, Arc<dyn Widget>>,
     ) {
-        let click_pos = match mouse {
-            Mouse::ScrollUp(_) => return,
-            Mouse::ScrollDown(_) => return,
-            Mouse::ScrollLeft(_) => return,
-            Mouse::ScrollRight(_) => return,
-            Mouse::LeftClick(_, y) => y,
-            Mouse::RightClick(_, y) => y,
-            Mouse::Hold(_, y) => y,
-            Mouse::Release(_, y) => y,
-            Mouse::Hover(_, _) => return,
+        let col = match mouse {
+            Mouse::LeftClick(_, col) | Mouse::RightClick(_, col) => col,
+            _ => return,
         };
-
-        let output_left = self.left_parts.iter_mut().fold("".to_owned(), |acc, part| {
-            format!(
-                "{}{}",
-                acc,
-                part.format_string_with_widgets(&widget_map, &state)
-            )
-        });
-
-        let output_center = self
-            .center_parts
-            .iter_mut()
-            .fold("".to_owned(), |acc, part| {
-                format!(
-                    "{}{}",
-                    acc,
-                    part.format_string_with_widgets(&widget_map, &state)
-                )
-            });
-
-        let output_right = self
-            .right_parts
-            .iter_mut()
-            .fold("".to_owned(), |acc, part| {
-                format!(
-                    "{}{}",
-                    acc,
-                    part.format_string_with_widgets(&widget_map, &state)
-                )
-            });
-
-        let (output_left, output_center, output_right) = match self.hide_on_overlength {
-            true => self.trim_output(&output_left, &output_center, &output_right, state.cols),
-            false => (output_left, output_center, output_right),
-        };
-
-        let mut offset = console::measure_text_width(&output_left);
-
-        self.process_widget_click(click_pos, &self.left_parts, &widget_map, &state, 0);
-
-        if click_pos <= offset {
-            return;
-        }
-
-        if !output_center.is_empty() {
-            tracing::debug!("widgetclick center");
-            offset += console::measure_text_width(&self.get_spacer_left(
-                &output_left,
-                &output_center,
+        let [left, center, right] = self.render_sections(&mut state, &widget_map);
+        let center_offset = console::measure_text_width(&left.output)
+            + console::measure_text_width(&self.get_spacer_left(
+                &left.output,
+                &center.output,
                 state.cols,
             ));
-
-            offset += self.process_widget_click(
-                click_pos,
-                &self.center_parts,
-                &widget_map,
-                &state,
-                offset,
-            );
-
-            if click_pos <= offset {
-                return;
-            }
-
-            offset += console::measure_text_width(&self.get_spacer_right(
-                &output_right,
-                &output_center,
-                state.cols,
-            ));
+        let right_offset = if center.output.is_empty() {
+            console::measure_text_width(&left.output)
+                + console::measure_text_width(&self.get_spacer(
+                    &left.output,
+                    &right.output,
+                    state.cols,
+                ))
         } else {
-            offset += console::measure_text_width(&self.get_spacer(
-                &output_left,
-                &output_right,
-                state.cols,
-            ));
+            center_offset
+                + console::measure_text_width(&center.output)
+                + console::measure_text_width(&self.get_spacer_right(
+                    &right.output,
+                    &center.output,
+                    state.cols,
+                ))
+        };
+        for (section, offset) in [(&left, 0), (&center, center_offset), (&right, right_offset)] {
+            if let Some(local_col) = col.checked_sub(offset) {
+                for (name, range) in &section.hits {
+                    if range.contains(&local_col) {
+                        if let Some(widget) = widget_map.get(widget_type(name)) {
+                            widget.process_click(name, &state, local_col - range.start);
+                        }
+                        return;
+                    }
+                }
+            }
         }
-
-        self.process_widget_click(click_pos, &self.right_parts, &widget_map, &state, offset);
     }
 
-    fn process_widget_click(
-        &self,
-        click_pos: usize,
-        widgets: &[FormattedPart],
-        widget_map: &BTreeMap<String, Arc<dyn Widget>>,
-        state: &ZellijState,
-        offset: usize,
-    ) -> usize {
-        let widget_string = widgets.iter().fold(String::new(), |a, b| a + &b.content);
-
-        let mut rendered_output = widget_string.clone();
-
-        let tokens: Vec<String> = widget_map.keys().map(|k| k.to_owned()).collect();
-
-        let widgets_regex = Regex::new("(\\{[a-z_0-9]+\\})").unwrap();
-        for widget in widgets_regex.captures_iter(widget_string.as_str()) {
-            let match_name = widget.get(0).unwrap().as_str();
-            let widget_key = match_name.trim_matches(|c| c == '{' || c == '}');
-            let mut widget_key_name = widget_key;
-
-            if widget_key.starts_with("command_") {
-                widget_key_name = "command";
-            }
-
-            if widget_key.starts_with("pipe_") {
-                widget_key_name = "pipe";
-            }
-
-            if !tokens.contains(&widget_key_name.to_owned()) {
-                continue;
-            }
-
-            let wid = match widget_map.get(widget_key_name) {
-                Some(wid) => wid,
-                None => continue,
-            };
-
-            let pos = match rendered_output.find(match_name) {
-                Some(_pos) => {
-                    let pref = rendered_output.split(match_name).collect::<Vec<&str>>()[0];
-                    console::measure_text_width(pref)
+    fn render_sections(
+        &mut self,
+        state: &mut ZellijState,
+        widgets: &BTreeMap<String, Arc<dyn Widget>>,
+    ) -> [RenderedParts; 3] {
+        state.tab_width_limit = None;
+        let mut left = render_parts(&mut self.left_parts, widgets, state);
+        let mut center = render_parts(&mut self.center_parts, widgets, state);
+        let mut right = RenderedParts::default();
+        if let Some(segments) = &mut self.right_segments {
+            let left_width = console::measure_text_width(&left.output);
+            if left_width > state.cols {
+                let tabs_width: usize = left
+                    .hits
+                    .iter()
+                    .filter(|(name, _)| name == "tabs")
+                    .map(|(_, range)| range.len())
+                    .sum();
+                state.tab_width_limit = Some(
+                    state
+                        .cols
+                        .saturating_sub(left_width.saturating_sub(tabs_width)),
+                );
+                left = render_parts(&mut self.left_parts, widgets, state);
+            } else {
+                let available = state
+                    .cols
+                    .saturating_sub(left_width + console::measure_text_width(&center.output));
+                for segment in segments {
+                    let part = render_parts(segment, widgets, state);
+                    if console::strip_ansi_codes(&part.output).trim().is_empty() {
+                        continue;
+                    }
+                    let separator = if right.output.is_empty() {
+                        RenderedParts::default()
+                    } else {
+                        render_parts(&mut self.right_separator, widgets, state)
+                    };
+                    if console::measure_text_width(&right.output)
+                        + console::measure_text_width(&separator.output)
+                        + console::measure_text_width(&part.output)
+                        > available
+                    {
+                        break;
+                    }
+                    right.append(separator);
+                    right.append(part);
                 }
-                None => continue,
-            };
-
-            let wid_res = wid.process(widget_key, state);
-            rendered_output = rendered_output.replace(match_name, &wid_res);
-
-            if click_pos < pos + offset
-                || click_pos > pos + offset + console::measure_text_width(&wid_res)
-            {
-                continue;
             }
-
-            wid.process_click(widget_key, state, click_pos - (pos + offset));
+        } else {
+            right = render_parts(&mut self.right_parts, widgets, state);
         }
-
-        console::measure_text_width(&rendered_output)
+        if self.hide_on_overlength {
+            let (l, c, r) =
+                self.trim_output(&left.output, &center.output, &right.output, state.cols);
+            for (section, output) in [(&mut left, l), (&mut center, c), (&mut right, r)] {
+                if output.is_empty() {
+                    *section = RenderedParts::default();
+                }
+            }
+        }
+        [left, center, right]
     }
 
     pub fn render_bar(
         &mut self,
-        state: ZellijState,
+        mut state: ZellijState,
         widget_map: BTreeMap<String, Arc<dyn Widget>>,
     ) -> String {
-        if self.left_parts.is_empty() && self.center_parts.is_empty() && self.right_parts.is_empty()
+        if self.left_parts.is_empty()
+            && self.center_parts.is_empty()
+            && self.right_parts.is_empty()
+            && self.right_segments.is_none()
         {
             return "No configuration found. See https://github.com/dj95/zjstatus/wiki/3-%E2%80%90-Configuration for more info".to_string();
         }
-
-        let output_left = self.left_parts.iter_mut().fold("".to_owned(), |acc, part| {
-            format!(
-                "{acc}{}",
-                part.format_string_with_widgets(&widget_map, &state)
-            )
-        });
-
-        let output_center = self
-            .center_parts
-            .iter_mut()
-            .fold("".to_owned(), |acc, part| {
-                format!(
-                    "{acc}{}",
-                    part.format_string_with_widgets(&widget_map, &state)
-                )
-            });
-
-        let output_right = self
-            .right_parts
-            .iter_mut()
-            .fold("".to_owned(), |acc, part| {
-                format!(
-                    "{acc}{}",
-                    part.format_string_with_widgets(&widget_map, &state)
-                )
-            });
-
-        let (output_left, output_center, output_right) = match self.hide_on_overlength {
-            true => self.trim_output(&output_left, &output_center, &output_right, state.cols),
-            false => (output_left, output_center, output_right),
-        };
+        let [left, center, right] = self.render_sections(&mut state, &widget_map);
+        let (output_left, output_center, output_right) = (left.output, center.output, right.output);
 
         if self.border.enabled {
             let mut border_top = "".to_owned();
@@ -501,10 +441,10 @@ impl ModuleConfig {
             let overlap = match (a, b) {
                 (Part::Left, Part::Right) => a_count + b_count > cols,
                 (Part::Right, Part::Left) => a_count + b_count > cols,
-                (Part::Left, Part::Center) => a_count > center_pos - (b_count / 2),
-                (Part::Center, Part::Left) => b_count > center_pos - (a_count / 2),
-                (Part::Right, Part::Center) => a_count > center_pos - (b_count / 2),
-                (Part::Center, Part::Right) => b_count > center_pos - (a_count / 2),
+                (Part::Left, Part::Center) => a_count > center_pos.saturating_sub(b_count / 2),
+                (Part::Center, Part::Left) => b_count > center_pos.saturating_sub(a_count / 2),
+                (Part::Right, Part::Center) => a_count > center_pos.saturating_sub(b_count / 2),
+                (Part::Center, Part::Right) => b_count > center_pos.saturating_sub(a_count / 2),
                 _ => false,
             };
 
@@ -578,6 +518,84 @@ fn parts_from_config(
 mod test {
     use super::*;
     use anstyle::{Effects, RgbColor};
+
+    #[test]
+    fn right_segments_yield_to_tabs_and_keep_visible_clicks() {
+        use std::cell::RefCell;
+        struct Commands(RefCell<Vec<String>>);
+        impl Widget for Commands {
+            fn process(&self, name: &str, state: &ZellijState) -> String {
+                state.pipe_results.get(name).cloned().unwrap_or_default()
+            }
+            fn process_click(&self, name: &str, _: &ZellijState, _: usize) {
+                self.0.borrow_mut().push(name.to_owned());
+            }
+        }
+        let config = BTreeMap::from([
+            ("format_left".into(), "tabs".into()),
+            ("format_right".into(), "{command_editor}{segment}{command_empty}{segment}#[fg=red]{command_cpu}{segment}{command_version}".into()),
+            ("format_right_separator".into(), " • ".into()),
+            ("format_hide_on_overlength".into(), "true".into()),
+            ("format_precedence".into(), "lrc".into()),
+        ]);
+        let commands = Arc::new(Commands(RefCell::new(Vec::new())));
+        let widgets: BTreeMap<String, Arc<dyn Widget>> =
+            BTreeMap::from([("command".into(), commands.clone() as Arc<dyn Widget>)]);
+        let mut renderer = ModuleConfig::new(&config).unwrap();
+        let mut state = ZellijState {
+            pipe_results: BTreeMap::from([
+                ("command_editor".into(), "界e\u{301}".into()),
+                ("command_cpu".into(), "cpu".into()),
+                ("command_version".into(), "ver".into()),
+            ]),
+            ..Default::default()
+        };
+        for (cols, expected) in [
+            (30, "界e\u{301} • cpu • ver"),
+            (18, "界e\u{301} • cpu"),
+            (12, "界e\u{301}"),
+            (6, ""),
+            (30, "界e\u{301} • cpu • ver"),
+        ] {
+            state.cols = cols;
+            let output = renderer.render_bar(state.clone(), widgets.clone());
+            let plain = console::strip_ansi_codes(&output);
+            assert_eq!(console::measure_text_width(&output), cols);
+            assert!(plain.starts_with("tabs"));
+            assert_eq!(plain[4..].trim(), expected, "width {cols}");
+            commands.0.borrow_mut().clear();
+            for col in 0..cols {
+                renderer.handle_mouse_action(
+                    state.clone(),
+                    Mouse::LeftClick(0, col),
+                    widgets.clone(),
+                );
+            }
+            let clicks = commands.0.borrow();
+            assert_eq!(
+                clicks
+                    .iter()
+                    .filter(|n| n.as_str() == "command_editor")
+                    .count(),
+                if expected.is_empty() { 0 } else { 3 }
+            );
+            assert_eq!(
+                clicks
+                    .iter()
+                    .filter(|n| n.as_str() == "command_cpu")
+                    .count(),
+                if expected.contains("cpu") { 3 } else { 0 }
+            );
+            assert_eq!(
+                clicks
+                    .iter()
+                    .filter(|n| n.as_str() == "command_version")
+                    .count(),
+                if expected.contains("ver") { 3 } else { 0 }
+            );
+            assert!(!clicks.iter().any(|n| n == "command_empty"));
+        }
+    }
 
     #[test]
     fn test_formatted_part_from_string() {

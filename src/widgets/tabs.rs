@@ -132,125 +132,128 @@ impl TabsWidget {
 
 impl Widget for TabsWidget {
     fn process(&self, _name: &str, state: &ZellijState) -> String {
-        let mut output = "".to_owned();
-        let mut counter = 0;
-
-        let (truncated_start, truncated_end, tabs) =
-            get_tab_window(&state.tabs, self.tab_display_count);
-
-        if truncated_start > 0 {
-            for f in &self.tab_truncate_start_format {
-                let mut content = f.content.clone();
-
-                if content.contains("{count}") {
-                    content = content.replace("{count}", (truncated_start).to_string().as_str());
-                }
-
-                output = format!("{output}{}", f.format_string(&content));
-            }
-        }
-
-        for tab in &tabs {
-            let content = self.render_tab(tab, &state.panes, &state.mode);
-            counter += 1;
-
-            output = format!("{}{}", output, content);
-
-            if counter < tabs.len()
-                && let Some(sep) = &self.separator
-            {
-                output = format!("{}{}", output, sep.format_string(&sep.content));
-            }
-        }
-
-        if truncated_end > 0 {
-            for f in &self.tab_truncate_end_format {
-                let mut content = f.content.clone();
-
-                if content.contains("{count}") {
-                    content = content.replace("{count}", (truncated_end).to_string().as_str());
-                }
-
-                output = format!("{output}{}", f.format_string(&content));
-            }
-        }
-
-        output
+        self.rendered_tabs(state)
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect()
     }
 
     fn process_click(&self, _name: &str, state: &ZellijState, pos: usize) {
-        let mut offset = 0;
-        let mut counter = 0;
-
-        let (truncated_start, truncated_end, tabs) =
-            get_tab_window(&state.tabs, self.tab_display_count);
-
-        let active_pos = &state
-            .tabs
-            .iter()
-            .find(|t| t.active)
-            .expect("no active tab")
-            .position
-            + 1;
-
-        if truncated_start > 0 {
-            for f in &self.tab_truncate_start_format {
-                let mut content = f.content.clone();
-
-                if content.contains("{count}") {
-                    content = content.replace("{count}", (truncated_end).to_string().as_str());
-                }
-
-                offset += console::measure_text_width(&f.format_string(&content));
-
-                if pos <= offset {
-                    switch_tab_to(active_pos.saturating_sub(1) as u32);
-                }
-            }
-        }
-
-        for tab in &tabs {
-            counter += 1;
-
-            let mut rendered_content = self.render_tab(tab, &state.panes, &state.mode);
-
-            if counter < tabs.len()
-                && let Some(sep) = &self.separator
-            {
-                rendered_content =
-                    format!("{}{}", rendered_content, sep.format_string(&sep.content));
-            }
-
-            let content_len = console::measure_text_width(&rendered_content);
-
-            if pos > offset && pos < offset + content_len {
-                switch_tab_to(tab.position as u32 + 1);
-
-                break;
-            }
-
-            offset += content_len;
-        }
-
-        if truncated_end > 0 {
-            for f in &self.tab_truncate_end_format {
-                let mut content = f.content.clone();
-
-                if content.contains("{count}") {
-                    content = content.replace("{count}", (truncated_end).to_string().as_str());
-                }
-
-                offset += console::measure_text_width(&f.format_string(&content));
-
-                if pos <= offset {
-                    switch_tab_to(cmp::min(active_pos + 1, state.tabs.len()) as u32);
-                }
-            }
+        if let Some(tab) = self.tab_at_column(state, pos) {
+            switch_tab_to(tab);
         }
     }
 }
 
 impl TabsWidget {
+    fn tab_at_column(&self, state: &ZellijState, col: usize) -> Option<u32> {
+        let mut offset = 0;
+        for (tab, text) in self.rendered_tabs(state) {
+            let end = offset + console::measure_text_width(&text);
+            if (offset..end).contains(&col) {
+                return Some(tab);
+            }
+            offset = end;
+        }
+        None
+    }
+
+    // One rendered window supplies both drawing and click targets. Unlike the
+    // upstream width-fitting proposal (#237), tabs get the full remaining bar
+    // only after right-side segments have been exhausted.
+    fn rendered_tabs(&self, state: &ZellijState) -> Vec<(u32, String)> {
+        if state.tabs.is_empty() || state.tab_width_limit == Some(0) {
+            return vec![];
+        }
+        let max_count = if state.tab_width_limit.is_some() {
+            self.tab_display_count.map(|n| n.max(1))
+        } else {
+            self.tab_display_count
+        };
+        let (mut start, end, _) = get_tab_window(&state.tabs, max_count);
+        let mut end = state.tabs.len() - end;
+        let active = state
+            .tabs
+            .iter()
+            .position(|tab| tab.active)
+            .unwrap_or(start);
+        loop {
+            let mut rendered = self.render_window(state, start, end);
+            let width: usize = rendered
+                .iter()
+                .map(|(_, text)| console::measure_text_width(text))
+                .sum();
+            let Some(limit) = state.tab_width_limit.filter(|limit| width > *limit) else {
+                return rendered;
+            };
+            if end - start > 1 {
+                if active - start > end - active - 1 {
+                    start += 1;
+                } else {
+                    end -= 1;
+                }
+                continue;
+            }
+            // At one tab, spend the budget on the active label and its native
+            // indicators before the hidden-tab counts.
+            let tab = &state.tabs[active];
+            let mut text = self.render_tab(tab, &state.panes, &state.mode);
+            if console::measure_text_width(&text) > limit {
+                let mut shortened = tab.clone();
+                shortened.name.clear();
+                let chrome_width = console::measure_text_width(&self.render_tab(
+                    &shortened,
+                    &state.panes,
+                    &state.mode,
+                ));
+                shortened.name =
+                    console::truncate_str(&tab.name, limit.saturating_sub(chrome_width), "…")
+                        .into_owned();
+                text = self.render_tab(&shortened, &state.panes, &state.mode);
+                // Also bounds name-free formats and terminals narrower than the
+                // index/indicators themselves.
+                text = console::truncate_str(&text, limit, "…").into_owned();
+            }
+            rendered.clear();
+            rendered.push((tab.position as u32 + 1, text));
+            return rendered;
+        }
+    }
+
+    fn render_window(&self, state: &ZellijState, start: usize, end: usize) -> Vec<(u32, String)> {
+        let indicator = |parts: &[FormattedPart], count: usize| -> String {
+            parts
+                .iter()
+                .map(|part| {
+                    part.format_string(&part.content.replace("{count}", &count.to_string()))
+                })
+                .collect()
+        };
+        let mut rendered = Vec::new();
+        if start > 0 {
+            rendered.push((
+                state.tabs[start - 1].position as u32 + 1,
+                indicator(&self.tab_truncate_start_format, start),
+            ));
+        }
+        for (index, tab) in state.tabs[start..end].iter().enumerate() {
+            let mut text = self.render_tab(tab, &state.panes, &state.mode);
+            if index + start + 1 < end
+                && let Some(separator) = &self.separator
+            {
+                text.push_str(&separator.format_string(&separator.content));
+            }
+            rendered.push((tab.position as u32 + 1, text));
+        }
+        if end < state.tabs.len() {
+            rendered.push((
+                state.tabs[end].position as u32 + 1,
+                indicator(&self.tab_truncate_end_format, state.tabs.len() - end),
+            ));
+        }
+        rendered
+    }
+
     fn select_format(&self, info: &TabInfo, mode: &ModeInfo) -> &Vec<FormattedPart> {
         if info.active && mode.mode == InputMode::RenameTab {
             return &self.rename_tab_format;
@@ -466,6 +469,53 @@ mod test {
     use crate::{config::ZellijState, widgets::widget::Widget};
     use rstest::rstest;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn width_fitting_keeps_active_tab_and_click_geometry() {
+        let widget = TabsWidget::new(&BTreeMap::from([
+            ("tab_normal".into(), "#[fg=blue][{index}] {name} ".into()),
+            (
+                "tab_active".into(),
+                "#[fg=green][{index}] {name} {sync_indicator}".into(),
+            ),
+            ("tab_sync_indicator".into(), "<>".into()),
+            ("tab_display_count".into(), "6".into()),
+            ("tab_truncate_start_format".into(), "< +{count} ".into()),
+            ("tab_truncate_end_format".into(), " +{count} >".into()),
+        ]));
+        let mut state = ZellijState {
+            tabs: (0..8)
+                .map(|i| tab(i, i, "long-project-界e\u{301}-name", i == 7))
+                .collect(),
+            ..Default::default()
+        };
+        state.tabs[7].is_sync_panes_active = true;
+        for width in (0..200).chain((0..200).rev()) {
+            state.tab_width_limit = Some(width);
+            let output = widget.process("tabs", &state);
+            assert!(
+                console::measure_text_width(&output) <= width,
+                "width {width}: {output:?}"
+            );
+            if width >= 10 {
+                let plain = console::strip_ansi_codes(&output);
+                assert!(plain.contains("[8]"), "active tab lost at width {width}");
+                assert!(plain.contains("<>"), "indicator lost at width {width}");
+            }
+        }
+        state.tab_width_limit = Some(12);
+        let output = widget.process("tabs", &state);
+        for col in 0..console::measure_text_width(&output) {
+            assert_eq!(widget.tab_at_column(&state, col), Some(8));
+        }
+        assert_eq!(widget.tab_at_column(&state, 12), None);
+        state.tab_width_limit = None;
+        assert!(
+            widget
+                .process("tabs", &state)
+                .contains("long-project-界e\u{301}-name")
+        );
+    }
 
     fn tab(tab_id: usize, position: usize, name: &str, active: bool) -> TabInfo {
         TabInfo {
