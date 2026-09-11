@@ -345,6 +345,8 @@ impl State {
                     );
                 }
 
+                should_render =
+                    config::apply_current_session_snapshot(&mut self.state, &session_info);
                 self.state.sessions = session_info;
             }
             Event::TabUpdate(tab_info) => {

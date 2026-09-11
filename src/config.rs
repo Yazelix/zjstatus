@@ -28,6 +28,20 @@ pub struct ZellijState {
     pub focused_pane_cwd: Option<std::path::PathBuf>,
 }
 
+pub fn apply_current_session_snapshot(
+    state: &mut ZellijState,
+    sessions: &[SessionInfo],
+) -> bool {
+    let Some(session) = sessions.iter().find(|session| session.is_current_session) else {
+        return false;
+    };
+    let changed = state.tabs != session.tabs || state.panes != session.panes;
+    state.tabs.clone_from(&session.tabs);
+    state.panes.clone_from(&session.panes);
+    state.cache_mask = UpdateEventMask::Tab as u8;
+    changed
+}
+
 #[derive(Clone, Debug, Ord, Eq, PartialEq, PartialOrd, Copy)]
 pub enum Part {
     Left,
@@ -523,6 +537,25 @@ fn parts_from_config(
 mod test {
     use super::*;
     use anstyle::{Effects, RgbColor};
+
+    #[test]
+    fn current_session_snapshot_primes_visible_tab_state() {
+        let tabs = vec![TabInfo {
+            name: "ready".into(),
+            ..Default::default()
+        }];
+        let sessions = vec![SessionInfo {
+            tabs: tabs.clone(),
+            is_current_session: true,
+            ..Default::default()
+        }];
+        let mut state = ZellijState::default();
+
+        assert!(apply_current_session_snapshot(&mut state, &sessions));
+        assert_eq!(state.tabs, tabs);
+        assert_eq!(state.cache_mask, UpdateEventMask::Tab as u8);
+        assert!(!apply_current_session_snapshot(&mut state, &sessions));
+    }
 
     #[test]
     fn hidden_segments_restore_updates_received_while_narrow() {
