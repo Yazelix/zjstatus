@@ -38,6 +38,7 @@ enum RenderMode {
 struct CommandConfig {
     command: String,
     format: Vec<FormattedPart>,
+    placeholder: String,
     env: Option<BTreeMap<String, String>>,
     cwd: Option<PathBuf>,
     follow_focus_cwd: bool,
@@ -106,7 +107,7 @@ impl Widget for CommandWidget {
         let command_result = match state.command_results.get(name) {
             Some(cr) => cr,
             None => {
-                return "".to_owned();
+                return command_config.placeholder.clone();
             }
         };
 
@@ -284,6 +285,7 @@ fn parse_config(zj_conf: &BTreeMap<String, String>) -> BTreeMap<String, CommandC
         let mut command_conf = CommandConfig {
             command: "".to_owned(),
             format: Vec::new(),
+            placeholder: "".to_owned(),
             cwd: None,
             follow_focus_cwd: false,
             env: None,
@@ -335,6 +337,12 @@ fn parse_config(zj_conf: &BTreeMap<String, String>) -> BTreeMap<String, CommandC
         if key.ends_with("format") {
             command_conf.format =
                 FormattedPart::multiple_from_format_string(zj_conf.get(&key).unwrap(), zj_conf);
+        }
+
+        if key.ends_with("placeholder") {
+            command_conf
+                .placeholder
+                .clone_from(&zj_conf.get(&key).unwrap().to_owned());
         }
 
         if key.ends_with("interval") {
@@ -543,6 +551,37 @@ mod test {
     }
 
     #[test]
+    fn command_placeholder_is_replaced_by_the_first_result() {
+        let mut config = BTreeMap::from([
+            ("command_cpu_command".into(), "ignored".into()),
+            ("command_cpu_format".into(), "{stdout}".into()),
+            ("command_cpu_interval".into(), "0".into()),
+            ("command_cpu_rendermode".into(), "raw".into()),
+        ]);
+        let mut state = ZellijState {
+            plugin_uuid: Uuid::new_v4().to_string(),
+            ..Default::default()
+        };
+
+        let widget = CommandWidget::new(&config);
+        assert_eq!(widget.process("command_cpu", &state), "");
+        release_command_lock(&state, "command_cpu");
+
+        config.insert("command_cpu_placeholder".into(), "cpu …".into());
+        let widget = CommandWidget::new(&config);
+        assert_eq!(widget.process("command_cpu", &state), "cpu …");
+        store_command_result(
+            &mut state,
+            Some(0),
+            b"cpu 10%".to_vec(),
+            Vec::new(),
+            BTreeMap::from([("name".into(), "command_cpu".into())]),
+        );
+        assert_eq!(widget.process("command_cpu", &state), "cpu 10%");
+        release_command_lock(&state, "command_cpu");
+    }
+
+    #[test]
     pub fn test_commandline_parser() {
         let input = "pwd";
         let result = commandline_parser(input);
@@ -569,6 +608,7 @@ mod test {
         let command_config = CommandConfig {
             command: "echo test".to_owned(),
             format: Vec::new(),
+            placeholder: "".to_owned(),
             env: None,
             cwd: None,
             follow_focus_cwd: false,
@@ -649,6 +689,7 @@ mod test {
             CommandConfig {
                 command: "echo test".to_owned(),
                 format: Vec::new(),
+                placeholder: "".to_owned(),
                 env: None,
                 cwd: None,
                 follow_focus_cwd: false,

@@ -9,6 +9,8 @@ tabs-first widget fitting. Startup state is applied in arrival order, unchanged
 snapshots do not redraw the bar, and command results redraw immediately. Native
 tab identity and indicators are retained; the former execution/activity overlay
 is removed.
+`command_<name>_placeholder` optionally renders literal text until that command's
+first result; its empty default preserves upstream behavior.
 The remaining runtime patches are removable when upstream supplies equivalent
 host-theme switching and pipe handling. Native tab and stale-payload tests guard
 that boundary; the startup delta is removable when upstream provides equivalent
