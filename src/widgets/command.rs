@@ -14,7 +14,10 @@ use zellij_tile::shim::{run_command, run_command_with_env_variables_and_cwd};
 
 use crate::render::{FormattedPart, formatted_parts_from_string_cached};
 
-use crate::{config::ZellijState, widgets::widget::Widget};
+use crate::{
+    config::{UpdateEventMask, ZellijState},
+    widgets::widget::Widget,
+};
 
 pub const TIMESTAMP_FORMAT: &str = "%s";
 
@@ -50,6 +53,29 @@ pub struct CommandResult {
     pub stdout: String,
     pub stderr: String,
     pub context: BTreeMap<String, String>,
+}
+
+pub fn store_command_result(
+    state: &mut ZellijState,
+    exit_code: Option<i32>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    context: BTreeMap<String, String>,
+) -> bool {
+    let Some(name) = context.get("name").cloned() else {
+        return false;
+    };
+    state.cache_mask = UpdateEventMask::Command as u8;
+    state.command_results.insert(
+        name,
+        CommandResult {
+            exit_code,
+            stdout: String::from_utf8(stdout).unwrap_or_default(),
+            stderr: String::from_utf8(stderr).unwrap_or_default(),
+            context,
+        },
+    );
+    true
 }
 
 pub struct CommandWidget {
@@ -491,6 +517,29 @@ mod test {
         );
 
         assert_eq!(focus_cwd_command_names(&conf), vec!["command_branch"]);
+    }
+
+    #[test]
+    fn stored_command_results_request_a_redraw() {
+        let mut state = ZellijState::default();
+        let context = BTreeMap::from([("name".into(), "command_cpu".into())]);
+
+        assert!(store_command_result(
+            &mut state,
+            Some(0),
+            b"cpu 10%".to_vec(),
+            Vec::new(),
+            context,
+        ));
+        assert_eq!(state.cache_mask, UpdateEventMask::Command as u8);
+        assert_eq!(state.command_results["command_cpu"].stdout, "cpu 10%");
+        assert!(!store_command_result(
+            &mut state,
+            Some(0),
+            Vec::new(),
+            Vec::new(),
+            BTreeMap::new(),
+        ));
     }
 
     #[test]

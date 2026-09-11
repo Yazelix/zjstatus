@@ -5,11 +5,14 @@
 The upstream baseline is `dj95/zjstatus` commit `17609e4` (including native bell
 tab formatting). The maintained delta provides host-theme configuration
 (`a9859a9`), separator-safe pipe payloads, command-test isolation, and opt-in
-tabs-first widget fitting. Native tab identity and indicators are retained;
-the former execution/activity overlay is removed.
+tabs-first widget fitting. Startup state is applied in arrival order, unchanged
+snapshots do not redraw the bar, and command results redraw immediately. Native
+tab identity and indicators are retained; the former execution/activity overlay
+is removed.
 The remaining runtime patches are removable when upstream supplies equivalent
 host-theme switching and pipe handling. Native tab and stale-payload tests guard
-that boundary; Nova Bar owns palettes, and Radar owns agent activity.
+that boundary; the startup delta is removable when upstream provides equivalent
+event handling. Nova Bar owns palettes, and Radar owns agent activity.
 
 ### Tabs-first fitting (BAR-WIDTH-001)
 
