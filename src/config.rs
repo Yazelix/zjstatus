@@ -320,23 +320,29 @@ impl ModuleConfig {
                 let available = state
                     .cols
                     .saturating_sub(left_width + console::measure_text_width(&center.output));
-                for part in segments {
+                let separator_width = console::measure_text_width(&separator.output);
+                let mut width = 0;
+                let mut visible = Vec::new();
+                for part in segments.into_iter().rev() {
                     if console::strip_ansi_codes(&part.output).trim().is_empty() {
                         continue;
                     }
-                    let separator = if right.output.is_empty() {
-                        RenderedParts::default()
+                    let part_width = console::measure_text_width(&part.output);
+                    let gap = if visible.is_empty() {
+                        0
                     } else {
-                        separator.clone()
+                        separator_width
                     };
-                    if console::measure_text_width(&right.output)
-                        + console::measure_text_width(&separator.output)
-                        + console::measure_text_width(&part.output)
-                        > available
-                    {
+                    if width + gap + part_width > available {
                         break;
                     }
-                    right.append(separator);
+                    width += gap + part_width;
+                    visible.push(part);
+                }
+                for part in visible.into_iter().rev() {
+                    if !right.output.is_empty() {
+                        right.append(separator.clone());
+                    }
                     right.append(part);
                 }
             }
@@ -594,7 +600,7 @@ mod test {
     }
 
     #[test]
-    fn right_segments_yield_to_tabs_and_keep_visible_clicks() {
+    fn right_segments_keep_fitting_suffix_anchored_and_clickable() {
         use std::cell::RefCell;
         struct Commands(RefCell<Vec<String>>);
         impl Widget for Commands {
@@ -626,8 +632,8 @@ mod test {
         };
         for (cols, expected) in [
             (30, "界e\u{301} • cpu • ver"),
-            (18, "界e\u{301} • cpu"),
-            (12, "界e\u{301}"),
+            (18, "cpu • ver"),
+            (12, "ver"),
             (6, ""),
             (30, "界e\u{301} • cpu • ver"),
         ] {
@@ -637,6 +643,7 @@ mod test {
             assert_eq!(console::measure_text_width(&output), cols);
             assert!(plain.starts_with("tabs"));
             assert_eq!(plain[4..].trim(), expected, "width {cols}");
+            assert!(expected.is_empty() || plain.ends_with(expected));
             commands.0.borrow_mut().clear();
             for col in 0..cols {
                 renderer.handle_mouse_action(
@@ -651,7 +658,7 @@ mod test {
                     .iter()
                     .filter(|n| n.as_str() == "command_editor")
                     .count(),
-                if expected.is_empty() { 0 } else { 3 }
+                if expected.contains('界') { 3 } else { 0 }
             );
             assert_eq!(
                 clicks
