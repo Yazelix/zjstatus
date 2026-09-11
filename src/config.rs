@@ -8,8 +8,6 @@ use crate::{
     render::{FormattedPart, RenderedParts, render_parts, widget_type},
     widgets::{command::CommandResult, notification, widget::Widget},
 };
-use chrono::{DateTime, Local};
-
 #[derive(Default, Debug, Clone)]
 pub struct ZellijState {
     pub cols: usize,
@@ -18,10 +16,8 @@ pub struct ZellijState {
     pub pipe_results: BTreeMap<String, String>,
     pub mode: ModeInfo,
     pub panes: PaneManifest,
-    pub plugin_uuid: String,
     pub tabs: Vec<TabInfo>,
     pub sessions: Vec<SessionInfo>,
-    pub start_time: DateTime<Local>,
     pub incoming_notification: Option<notification::Message>,
     pub cache_mask: u8,
     pub focused_pane_id: Option<PaneId>,

@@ -1,11 +1,6 @@
 use kdl::{KdlDocument, KdlError};
 use lazy_static::lazy_static;
-use std::{
-    collections::BTreeMap,
-    fs::{File, remove_file},
-    ops::Sub,
-    path::{Path, PathBuf},
-};
+use std::{cell::RefCell, collections::BTreeMap, ops::Sub, path::PathBuf};
 
 use chrono::{DateTime, Duration, Local};
 use regex::Regex;
@@ -79,9 +74,13 @@ pub fn store_command_result(
     true
 }
 
+/// Last launch time and cwd per command, shared by every render of a frame.
+type LastRuns = RefCell<BTreeMap<String, (i64, Option<PathBuf>)>>;
+
 pub struct CommandWidget {
     config: BTreeMap<String, CommandConfig>,
     zj_conf: BTreeMap<String, String>,
+    last_runs: LastRuns,
 }
 
 impl CommandWidget {
@@ -89,6 +88,7 @@ impl CommandWidget {
         Self {
             config: parse_config(config),
             zj_conf: config.clone(),
+            last_runs: RefCell::new(BTreeMap::new()),
         }
     }
 }
@@ -102,7 +102,7 @@ impl Widget for CommandWidget {
             }
         };
 
-        run_command_if_needed(command_config.clone(), name, state);
+        run_command_if_needed(command_config.clone(), name, state, &self.last_runs);
 
         let command_result = match state.command_results.get(name) {
             Some(cr) => cr,
@@ -203,24 +203,44 @@ fn render_dynamic_formatted_content(content: &str, config: &BTreeMap<String, Str
 }
 
 #[tracing::instrument(skip(command_config, state))]
-fn run_command_if_needed(command_config: CommandConfig, name: &str, state: &ZellijState) -> bool {
+fn run_command_if_needed(
+    command_config: CommandConfig,
+    name: &str,
+    state: &ZellijState,
+    last_runs: &LastRuns,
+) -> bool {
     let got_result = state.command_results.contains_key(name);
     if got_result && command_config.interval == 0 {
         return false;
     }
 
     let ts = Local::now();
-    let last_run = get_timestamp_from_event_or_default(name, state, command_config.interval);
+    let cwd = if command_config.follow_focus_cwd {
+        match &state.focused_pane_cwd {
+            Some(cwd) => Some(cwd.clone()),
+            None => return false,
+        }
+    } else {
+        command_config.cwd.clone()
+    };
+    // A launch for another focused-pane cwd does not hold back this one.
+    if last_runs
+        .borrow()
+        .get(name)
+        .is_some_and(|(last_run, last_cwd)| {
+            *last_cwd == cwd
+                && (command_config.interval == 0
+                    || ts.timestamp() - last_run < command_config.interval)
+        })
+    {
+        return false;
+    }
+    let last_run = get_timestamp_from_event_or_default(name, state);
 
     if ts.timestamp() - last_run.timestamp() >= command_config.interval {
-        let cwd = if command_config.follow_focus_cwd {
-            match &state.focused_pane_cwd {
-                Some(cwd) => Some(cwd.clone()),
-                None => return false,
-            }
-        } else {
-            command_config.cwd.clone()
-        };
+        last_runs
+            .borrow_mut()
+            .insert(name.to_owned(), (ts.timestamp(), cwd.clone()));
 
         let mut context = BTreeMap::new();
         context.insert("name".to_owned(), name.to_owned());
@@ -394,17 +414,9 @@ fn get_env_vars(doc: KdlDocument) -> BTreeMap<String, String> {
     output
 }
 
-fn get_timestamp_from_event_or_default(
-    name: &str,
-    state: &ZellijState,
-    interval: i64,
-) -> DateTime<Local> {
+fn get_timestamp_from_event_or_default(name: &str, state: &ZellijState) -> DateTime<Local> {
     let command_result = state.command_results.get(name);
     if command_result.is_none() {
-        if lock(name, state.clone()) {
-            return Local::now();
-        }
-
         return Sub::<Duration>::sub(Local::now(), Duration::try_days(1).unwrap());
     }
     let command_result = command_result.unwrap();
@@ -415,33 +427,9 @@ fn get_timestamp_from_event_or_default(
     }
     let ts_context = ts_context.unwrap();
 
-    if Local::now().timestamp() - state.start_time.timestamp() < interval {
-        release_command_lock(state, name);
-    }
-
     match DateTime::parse_from_str(ts_context, TIMESTAMP_FORMAT) {
         Ok(ts) => ts.into(),
         Err(_) => Sub::<Duration>::sub(Local::now(), Duration::try_days(1).unwrap()),
-    }
-}
-
-fn lock(name: &str, state: ZellijState) -> bool {
-    let path = format!("/tmp/{}.{}.lock", state.plugin_uuid, name);
-
-    if !Path::new(&path).exists() {
-        let _ = File::create(path);
-
-        return false;
-    }
-
-    true
-}
-
-pub fn release_command_lock(state: &ZellijState, name: &str) {
-    let path = format!("/tmp/{}.{}.lock", state.plugin_uuid, name);
-
-    if Path::new(&path).exists() {
-        let _ = remove_file(path);
     }
 }
 
@@ -501,7 +489,6 @@ fn commandline_parser(input: &str) -> Vec<String> {
 mod test {
     use super::*;
     use rstest::rstest;
-    use uuid::Uuid;
 
     #[test]
     pub fn test_focused_pane_cwd_parsing() {
@@ -558,14 +545,10 @@ mod test {
             ("command_cpu_interval".into(), "0".into()),
             ("command_cpu_rendermode".into(), "raw".into()),
         ]);
-        let mut state = ZellijState {
-            plugin_uuid: Uuid::new_v4().to_string(),
-            ..Default::default()
-        };
+        let mut state = ZellijState::default();
 
         let widget = CommandWidget::new(&config);
         assert_eq!(widget.process("command_cpu", &state), "");
-        release_command_lock(&state, "command_cpu");
 
         config.insert("command_cpu_placeholder".into(), "cpu …".into());
         let widget = CommandWidget::new(&config);
@@ -578,7 +561,6 @@ mod test {
             BTreeMap::from([("name".into(), "command_cpu".into())]),
         );
         assert_eq!(widget.process("command_cpu", &state), "cpu 10%");
-        release_command_lock(&state, "command_cpu");
     }
 
     #[test]
@@ -600,9 +582,9 @@ mod test {
     }
 
     #[test]
-    pub fn test_release_command_lock_allows_rerun_without_result() {
-        let state = ZellijState {
-            plugin_uuid: "release_command_lock_test".to_owned(),
+    pub fn test_focused_pane_cwd_change_allows_rerun_within_interval() {
+        let mut state = ZellijState {
+            focused_pane_cwd: Some(PathBuf::from("/tmp")),
             ..ZellijState::default()
         };
         let command_config = CommandConfig {
@@ -611,35 +593,35 @@ mod test {
             placeholder: "".to_owned(),
             env: None,
             cwd: None,
-            follow_focus_cwd: false,
+            follow_focus_cwd: true,
             interval: 5,
             render_mode: RenderMode::Static,
             click_action: "".to_owned(),
             hide_on_empty_stdout: false,
         };
-
-        release_command_lock(&state, "test_release");
+        let last_runs = LastRuns::default();
 
         assert!(run_command_if_needed(
             command_config.clone(),
-            "test_release",
-            &state
+            "test_cwd",
+            &state,
+            &last_runs
         ));
         assert!(!run_command_if_needed(
             command_config.clone(),
-            "test_release",
-            &state
+            "test_cwd",
+            &state,
+            &last_runs
         ));
 
-        release_command_lock(&state, "test_release");
+        state.focused_pane_cwd = Some(PathBuf::from("/var"));
 
         assert!(run_command_if_needed(
             command_config,
-            "test_release",
-            &state
+            "test_cwd",
+            &state,
+            &last_runs
         ));
-
-        release_command_lock(&state, "test_release");
     }
 
     #[rstest]
@@ -682,26 +664,23 @@ mod test {
         #[case] state: &ZellijState,
         #[case] expected: bool,
     ) {
-        let mut state = state.clone();
-        state.plugin_uuid = Uuid::new_v4().to_string();
-
-        let res = run_command_if_needed(
-            CommandConfig {
-                command: "echo test".to_owned(),
-                format: Vec::new(),
-                placeholder: "".to_owned(),
-                env: None,
-                cwd: None,
-                follow_focus_cwd: false,
-                interval,
-                render_mode: RenderMode::Static,
-                click_action: "".to_owned(),
-                hide_on_empty_stdout: false,
-            },
-            "test",
-            &state,
-        );
-        release_command_lock(&state, "test");
+        let config = CommandConfig {
+            command: "echo test".to_owned(),
+            format: Vec::new(),
+            placeholder: "".to_owned(),
+            env: None,
+            cwd: None,
+            follow_focus_cwd: false,
+            interval,
+            render_mode: RenderMode::Static,
+            click_action: "".to_owned(),
+            hide_on_empty_stdout: false,
+        };
+        let last_runs = RefCell::new(BTreeMap::new());
+        let res = run_command_if_needed(config.clone(), "test", state, &last_runs);
+        if res {
+            assert!(!run_command_if_needed(config, "test", state, &last_runs));
+        }
         assert_eq!(res, expected);
     }
 }

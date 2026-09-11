@@ -8,7 +8,11 @@ tab formatting). The maintained delta provides host-theme configuration
 tabs-first widget fitting. Startup state is applied in arrival order, unchanged
 snapshots do not redraw the bar, and command results redraw immediately. Native
 tab identity and indicators are retained; the former execution/activity overlay
-is removed.
+is removed. Nova can opt into one background `controller` that owns state,
+rendering, and command refreshes while per-tab `view` instances exchange only
+width, frame, and mouse messages. Without a `role`, zjstatus keeps its standalone
+behavior. Command launches are limited to one per configured interval even when
+the same frame is evaluated repeatedly.
 `command_<name>_placeholder` optionally renders literal text until that command's
 first result; its empty default preserves upstream behavior.
 The remaining runtime patches are removable when upstream supplies equivalent
