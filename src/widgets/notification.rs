@@ -29,17 +29,26 @@ impl NotificationWidget {
             None => FormattedPart::multiple_from_format_string("", config),
         };
 
-        let show_interval = match config.get("notification_show_interval") {
-            Some(i) => i.parse::<i64>().unwrap_or(5),
-            None => 5,
-        };
-
         Self {
-            show_interval,
+            show_interval: show_interval_seconds(config),
             format_unread,
             format_no_notifications,
         }
     }
+}
+
+pub fn show_interval_seconds(config: &BTreeMap<String, String>) -> i64 {
+    config
+        .get("notification_show_interval")
+        .and_then(|interval| interval.parse().ok())
+        .unwrap_or(5)
+}
+
+pub fn toast_min_width(config: &BTreeMap<String, String>) -> usize {
+    config
+        .get("notification_toast_min_width")
+        .and_then(|width| width.parse().ok())
+        .unwrap_or_default()
 }
 
 impl Widget for NotificationWidget {

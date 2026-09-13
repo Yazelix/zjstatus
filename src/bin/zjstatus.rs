@@ -1,15 +1,19 @@
 use zellij_tile::prelude::*;
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use zjstatus::{
     config::{self, ModuleConfig, UpdateEventMask, ZellijState},
     frames, pipe,
     widgets::{
-        command::{CommandWidget, store_command_result},
+        command::{store_command_result, CommandWidget},
         datetime::DateTimeWidget,
         mode::ModeWidget,
-        notification::NotificationWidget,
+        notification::{self, NotificationWidget},
         pipe::PipeWidget,
         session::SessionWidget,
         swap_layout::SwapLayoutWidget,
@@ -50,6 +54,42 @@ enum ViewRequest {
     RightClick(isize, usize),
 }
 
+struct ToastTarget {
+    tab_id: usize,
+    frame: String,
+    deadline: Instant,
+}
+
+fn view_for_tab(
+    tab_id: usize,
+    tabs: &[TabInfo],
+    panes: &PaneManifest,
+    views: &BTreeMap<u32, usize>,
+) -> Option<(u32, usize)> {
+    let position = tabs.iter().find(|tab| tab.tab_id == tab_id)?.position;
+    panes.panes.get(&position)?.iter().find_map(|pane| {
+        if pane.is_plugin {
+            views.get(&pane.id).map(|&cols| (pane.id, cols))
+        } else {
+            None
+        }
+    })
+}
+
+fn toast_start(cols: usize, width: usize) -> usize {
+    cols.saturating_sub(width)
+}
+
+fn fit_toast_frame(frame: &str, cols: usize, min_width: usize) -> Option<(String, usize)> {
+    let mut frame = console::truncate_str(frame, cols, "…").into_owned();
+    let frame_width = console::measure_text_width(&frame);
+    let width = frame_width.max(min_width).min(cols);
+    if width > frame_width {
+        frame = format!("\x1b[0m{}{frame}", " ".repeat(width - frame_width));
+    }
+    (width > 0).then_some((frame, width))
+}
+
 fn parse_view_request(raw: &str) -> Option<ViewRequest> {
     let mut fields = raw.split(':');
     let kind = fields.next()?;
@@ -85,6 +125,7 @@ struct State {
     view_width: Option<usize>,
     view_frame: String,
     views: BTreeMap<u32, usize>,
+    toast_target: Option<ToastTarget>,
 }
 
 #[cfg(not(test))]
@@ -176,6 +217,7 @@ impl ZellijPlugin for State {
             cache_mask: 0,
             incoming_notification: None,
         };
+        self.toast_target = None;
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
@@ -194,6 +236,11 @@ impl ZellijPlugin for State {
             return self.handle_view_request(&pipe_message);
         }
 
+        let previous_notification = self
+            .state
+            .incoming_notification
+            .as_ref()
+            .map(|notification| notification.received_at);
         let mut should_render = false;
 
         match pipe_message.source {
@@ -215,6 +262,40 @@ impl ZellijPlugin for State {
         }
 
         if self.role == Role::Controller && should_render {
+            let notification_changed = self
+                .state
+                .incoming_notification
+                .as_ref()
+                .map(|notification| notification.received_at)
+                != previous_notification;
+            if notification_changed {
+                let tab_id = self
+                    .state
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.active)
+                    .map(|tab| tab.tab_id);
+                let timeout = u64::try_from(notification::show_interval_seconds(
+                    &self.userspace_configuration,
+                ))
+                .ok()
+                .filter(|seconds| *seconds > 0)
+                .map(Duration::from_secs);
+                let frame = self.widget_map.get("notifications").and_then(|widget| {
+                    let frame = widget.process("notifications", &self.state);
+                    (!frame.is_empty()).then_some(frame)
+                });
+                self.toast_target = match (tab_id, timeout, frame) {
+                    (Some(tab_id), Some(timeout), Some(frame)) => Instant::now()
+                        .checked_add(timeout)
+                        .map(|deadline| ToastTarget {
+                            tab_id,
+                            frame,
+                            deadline,
+                        }),
+                    _ => None,
+                };
+            }
             self.publish_views();
             false
         } else {
@@ -315,6 +396,7 @@ impl State {
             Event::PermissionRequestResult(status) => {
                 self.got_permissions = status == PermissionStatus::Granted;
                 if self.got_permissions {
+                    set_selectable(false);
                     self.request_frame();
                 }
                 true
@@ -347,7 +429,8 @@ impl State {
     }
 
     fn publish_view(&mut self, plugin_id: u32, cols: usize) {
-        let frame = self.render_frame(cols);
+        let mut frame = self.render_frame(cols);
+        self.append_toast(plugin_id, cols, &mut frame);
         pipe_message_to_plugin(
             MessageToPlugin::new(VIEW_FRAME_PIPE)
                 .with_destination_plugin_id(plugin_id)
@@ -359,10 +442,11 @@ impl State {
         let views: Vec<_> = self.views.iter().map(|(&id, &cols)| (id, cols)).collect();
         let mut frames = BTreeMap::new();
         for (plugin_id, cols) in views {
-            let frame = frames
+            let mut frame = frames
                 .entry(cols)
                 .or_insert_with(|| self.render_frame(cols))
                 .clone();
+            self.append_toast(plugin_id, cols, &mut frame);
             pipe_message_to_plugin(
                 MessageToPlugin::new(VIEW_FRAME_PIPE)
                     .with_destination_plugin_id(plugin_id)
@@ -390,6 +474,12 @@ impl State {
                 let Some(&cols) = self.views.get(&plugin_id) else {
                     return false;
                 };
+                if self
+                    .toast_for_view(plugin_id, cols)
+                    .is_some_and(|(_, width)| (toast_start(cols, width)..cols).contains(&col))
+                {
+                    return false;
+                }
                 self.state.cols = cols;
                 let mouse = if matches!(request, ViewRequest::LeftClick(_, _)) {
                     Mouse::LeftClick(line, col)
@@ -518,6 +608,13 @@ impl State {
                 tracing::Span::current().record("event_type", "Event::Timer");
                 set_timeout(REFRESH_INTERVAL_SECONDS);
                 self.state.cache_mask = 0;
+                if self
+                    .toast_target
+                    .as_ref()
+                    .is_some_and(|target| target.deadline <= Instant::now())
+                {
+                    self.toast_target = None;
+                }
 
                 should_render = true;
             }
@@ -544,6 +641,33 @@ impl State {
             Err(error) => self.err = Some(error),
         }
         true
+    }
+
+    fn append_toast(&self, plugin_id: u32, cols: usize, frame: &mut String) {
+        if let Some((toast, width)) = self.toast_for_view(plugin_id, cols) {
+            frame.push_str(&format!("\x1b[{}G{toast}", toast_start(cols, width) + 1));
+        }
+    }
+
+    fn toast_for_view(&self, plugin_id: u32, cols: usize) -> Option<(String, usize)> {
+        let target = self
+            .toast_target
+            .as_ref()
+            .filter(|target| target.deadline > Instant::now())?;
+        let (target_plugin_id, _) = view_for_tab(
+            target.tab_id,
+            &self.state.tabs,
+            &self.state.panes,
+            &self.views,
+        )?;
+        if target_plugin_id != plugin_id {
+            return None;
+        }
+        fit_toast_frame(
+            &target.frame,
+            cols,
+            notification::toast_min_width(&self.userspace_configuration),
+        )
     }
 }
 
@@ -620,5 +744,61 @@ mod tests {
             Role::from_config(&BTreeMap::from([("role".into(), "controller".into())])),
             Role::Controller
         );
+    }
+
+    #[test]
+    fn toast_routing_uses_stable_tab_identity_without_fallback() {
+        let tabs = vec![
+            TabInfo {
+                position: 2,
+                tab_id: 40,
+                ..Default::default()
+            },
+            TabInfo {
+                position: 7,
+                tab_id: 90,
+                ..Default::default()
+            },
+        ];
+        let panes = PaneManifest {
+            panes: std::collections::HashMap::from([
+                (
+                    2,
+                    vec![PaneInfo {
+                        id: 12,
+                        is_plugin: true,
+                        ..Default::default()
+                    }],
+                ),
+                (
+                    7,
+                    vec![PaneInfo {
+                        id: 17,
+                        is_plugin: true,
+                        ..Default::default()
+                    }],
+                ),
+            ]),
+        };
+        let views = BTreeMap::from([(12, 80), (17, 120)]);
+
+        assert_eq!(view_for_tab(90, &tabs, &panes, &views), Some((17, 120)));
+        assert_eq!(view_for_tab(41, &tabs, &panes, &views), None);
+    }
+
+    #[test]
+    fn toast_frame_is_bounded_and_right_aligned() {
+        assert_eq!(toast_start(120, 20), 100);
+        assert_eq!(toast_start(10, 20), 0);
+
+        let (frame, width) = fit_toast_frame("\x1b[31mabcdef\x1b[0m", 5, 0).unwrap();
+        assert_eq!(console::strip_ansi_codes(&frame), "abcd…");
+        assert_eq!(console::measure_text_width(&frame), 5);
+        assert_eq!(width, 5);
+
+        let (frame, width) = fit_toast_frame("done", 10, 8).unwrap();
+        assert_eq!(console::strip_ansi_codes(&frame), "    done");
+        assert_eq!(width, 8);
+        assert_eq!(fit_toast_frame("done", 0, 8), None);
     }
 }

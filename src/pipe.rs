@@ -5,6 +5,8 @@ use crate::{
     widgets::{command::TIMESTAMP_FORMAT, notification},
 };
 
+const MAX_NOTIFICATION_CHARACTERS: usize = 160;
+
 /// Parses the line protocol and updates the state accordingly
 ///
 /// The protocol is as follows:
@@ -47,10 +49,7 @@ fn process_line(state: &mut ZellijState, line: &str) -> bool {
             rerun_command(state, argument);
             true
         }
-        "notify" => {
-            notify(state, argument);
-            true
-        }
+        "notify" => notify(state, argument),
         "pipe" => {
             let Some(content) = parts.next() else {
                 return false;
@@ -69,11 +68,20 @@ fn pipe(state: &mut ZellijState, name: &str, content: &str) {
         .insert(name.to_owned(), content.to_owned());
 }
 
-fn notify(state: &mut ZellijState, message: &str) {
+fn notify(state: &mut ZellijState, message: &str) -> bool {
+    let Some(body) = sanitize_notification(message) else {
+        return false;
+    };
     state.incoming_notification = Some(notification::Message {
-        body: message.to_string(),
+        body,
         received_at: Local::now(),
     });
+    true
+}
+
+fn sanitize_notification(message: &str) -> Option<String> {
+    (!message.is_empty() && !message.chars().any(char::is_control))
+        .then(|| message.chars().take(MAX_NOTIFICATION_CHARACTERS).collect())
 }
 
 fn rerun_command(state: &mut ZellijState, command_name: &str) {
@@ -110,6 +118,32 @@ mod tests {
         assert_eq!(
             state.pipe_results.get("workspace").map(String::as_str),
             Some("agent::plan")
+        );
+    }
+
+    #[test]
+    fn notification_protocol_rejects_controls_and_clamps_text() {
+        let mut state = ZellijState::default();
+
+        assert!(!parse_protocol(
+            &mut state,
+            "zjstatus::notify::unsafe\u{1b}[2J"
+        ));
+        assert!(state.incoming_notification.is_none());
+
+        assert!(parse_protocol(
+            &mut state,
+            &format!("zjstatus::notify::{}", "x".repeat(200))
+        ));
+        assert_eq!(
+            state
+                .incoming_notification
+                .as_ref()
+                .unwrap()
+                .body
+                .chars()
+                .count(),
+            MAX_NOTIFICATION_CHARACTERS
         );
     }
 }
