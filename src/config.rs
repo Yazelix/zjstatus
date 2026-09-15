@@ -29,9 +29,12 @@ pub fn apply_current_session_snapshot(
     let Some(session) = sessions.iter().find(|session| session.is_current_session) else {
         return false;
     };
-    let changed = state.tabs != session.tabs || state.panes != session.panes;
+    let changed = state.tabs != session.tabs
+        || state.panes != session.panes
+        || state.mode.session_name.as_ref() != Some(&session.name);
     state.tabs.clone_from(&session.tabs);
     state.panes.clone_from(&session.panes);
+    state.mode.session_name = Some(session.name.clone());
     state.cache_mask = UpdateEventMask::Tab as u8;
     changed
 }
@@ -539,6 +542,7 @@ mod test {
             ..Default::default()
         }];
         let sessions = vec![SessionInfo {
+            name: "ready-session".into(),
             tabs: tabs.clone(),
             is_current_session: true,
             ..Default::default()
@@ -547,6 +551,7 @@ mod test {
 
         assert!(apply_current_session_snapshot(&mut state, &sessions));
         assert_eq!(state.tabs, tabs);
+        assert_eq!(state.mode.session_name.as_deref(), Some("ready-session"));
         assert_eq!(state.cache_mask, UpdateEventMask::Tab as u8);
         assert!(!apply_current_session_snapshot(&mut state, &sessions));
     }
