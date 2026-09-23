@@ -27,7 +27,19 @@ const REFRESH_INTERVAL_SECONDS: f64 = 1.0;
 const VIEW_REQUEST_PIPE: &str = "zjstatus.view_request.v1";
 const VIEW_FRAME_PIPE: &str = "zjstatus.view_frame.v1";
 const CONTROLLER_READY_PIPE: &str = "zjstatus.controller_ready.v1";
+const CLIENT_ID_ARG: &str = "zjstatus_client_id";
 const MAX_BAR_WIDTH: usize = 10_000;
+
+fn client_message(name: &str, client_id: u16) -> MessageToPlugin {
+    MessageToPlugin::new(name).with_args(BTreeMap::from([(
+        CLIENT_ID_ARG.to_owned(),
+        client_id.to_string(),
+    )]))
+}
+
+fn pipe_for_client(message: &PipeMessage, client_id: u16) -> bool {
+    message.args.get(CLIENT_ID_ARG) == Some(&client_id.to_string())
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Role {
@@ -221,6 +233,13 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if matches!(
+            pipe_message.name.as_str(),
+            VIEW_REQUEST_PIPE | VIEW_FRAME_PIPE | CONTROLLER_READY_PIPE
+        ) && !pipe_for_client(&pipe_message, get_plugin_ids().client_id)
+        {
+            return false;
+        }
         if self.role == Role::View {
             if pipe_message.name == VIEW_FRAME_PIPE {
                 if let Some(frame) = pipe_message.payload {
@@ -386,7 +405,8 @@ impl State {
     fn request_frame(&self) {
         if let Some(width) = self.view_width {
             pipe_message_to_plugin(
-                MessageToPlugin::new(VIEW_REQUEST_PIPE).with_payload(format!("width:{width}")),
+                client_message(VIEW_REQUEST_PIPE, get_plugin_ids().client_id)
+                    .with_payload(format!("width:{width}")),
             );
         }
     }
@@ -403,14 +423,14 @@ impl State {
             }
             Event::Mouse(Mouse::LeftClick(line, col)) if self.got_permissions => {
                 pipe_message_to_plugin(
-                    MessageToPlugin::new(VIEW_REQUEST_PIPE)
+                    client_message(VIEW_REQUEST_PIPE, get_plugin_ids().client_id)
                         .with_payload(format!("left:{line}:{col}")),
                 );
                 false
             }
             Event::Mouse(Mouse::RightClick(line, col)) if self.got_permissions => {
                 pipe_message_to_plugin(
-                    MessageToPlugin::new(VIEW_REQUEST_PIPE)
+                    client_message(VIEW_REQUEST_PIPE, get_plugin_ids().client_id)
                         .with_payload(format!("right:{line}:{col}")),
                 );
                 false
@@ -432,7 +452,7 @@ impl State {
         let mut frame = self.render_frame(cols);
         self.append_toast(plugin_id, cols, &mut frame);
         pipe_message_to_plugin(
-            MessageToPlugin::new(VIEW_FRAME_PIPE)
+            client_message(VIEW_FRAME_PIPE, get_plugin_ids().client_id)
                 .with_destination_plugin_id(plugin_id)
                 .with_payload(frame),
         );
@@ -448,7 +468,7 @@ impl State {
                 .clone();
             self.append_toast(plugin_id, cols, &mut frame);
             pipe_message_to_plugin(
-                MessageToPlugin::new(VIEW_FRAME_PIPE)
+                client_message(VIEW_FRAME_PIPE, get_plugin_ids().client_id)
                     .with_destination_plugin_id(plugin_id)
                     .with_payload(frame),
             );
@@ -556,7 +576,10 @@ impl State {
                 tracing::debug!(result = ?result);
                 set_selectable(false);
                 if result == PermissionStatus::Granted && self.role == Role::Controller {
-                    pipe_message_to_plugin(MessageToPlugin::new(CONTROLLER_READY_PIPE));
+                    pipe_message_to_plugin(client_message(
+                        CONTROLLER_READY_PIPE,
+                        get_plugin_ids().client_id,
+                    ));
                 }
             }
             Event::RunCommandResult(exit_code, stdout, stderr, context) => {
@@ -731,6 +754,22 @@ mod tests {
         ] {
             assert_eq!(parse_view_request(invalid), None, "{invalid:?}");
         }
+    }
+
+    #[test]
+    fn controller_view_pipes_stay_on_their_client() {
+        let outgoing = client_message(VIEW_FRAME_PIPE, 7);
+        let mut incoming = PipeMessage::new(
+            PipeSource::Plugin(3),
+            outgoing.message_name,
+            &outgoing.message_payload,
+            &Some(outgoing.message_args),
+            true,
+        );
+        assert!(pipe_for_client(&incoming, 7));
+        assert!(!pipe_for_client(&incoming, 8));
+        incoming.args.clear();
+        assert!(!pipe_for_client(&incoming, 7));
     }
 
     #[test]

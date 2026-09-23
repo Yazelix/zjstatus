@@ -29,10 +29,13 @@ pub fn apply_current_session_snapshot(
     let Some(session) = sessions.iter().find(|session| session.is_current_session) else {
         return false;
     };
-    let changed = state.tabs != session.tabs
+    let prime_tabs = state.tabs.is_empty();
+    let changed = (prime_tabs && state.tabs != session.tabs)
         || state.panes != session.panes
         || state.mode.session_name.as_ref() != Some(&session.name);
-    state.tabs.clone_from(&session.tabs);
+    if prime_tabs {
+        state.tabs.clone_from(&session.tabs);
+    }
     state.panes.clone_from(&session.panes);
     state.mode.session_name = Some(session.name.clone());
     state.cache_mask = UpdateEventMask::Tab as u8;
@@ -537,11 +540,18 @@ mod test {
 
     #[test]
     fn current_session_snapshot_primes_visible_tab_state() {
-        let tabs = vec![TabInfo {
-            name: "ready".into(),
-            ..Default::default()
-        }];
-        let sessions = vec![SessionInfo {
+        let tabs = vec![
+            TabInfo {
+                name: "ready".into(),
+                active: true,
+                ..Default::default()
+            },
+            TabInfo {
+                name: "other".into(),
+                ..Default::default()
+            },
+        ];
+        let mut sessions = vec![SessionInfo {
             name: "ready-session".into(),
             tabs: tabs.clone(),
             is_current_session: true,
@@ -554,6 +564,11 @@ mod test {
         assert_eq!(state.mode.session_name.as_deref(), Some("ready-session"));
         assert_eq!(state.cache_mask, UpdateEventMask::Tab as u8);
         assert!(!apply_current_session_snapshot(&mut state, &sessions));
+
+        // Another client's active tab in a shared snapshot cannot replace this client's TabUpdate.
+        sessions[0].tabs[1].active = true;
+        assert!(!apply_current_session_snapshot(&mut state, &sessions));
+        assert_eq!(state.tabs, tabs);
     }
 
     #[test]

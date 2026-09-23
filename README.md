@@ -13,8 +13,10 @@ rendering, and command refreshes while per-tab `view` instances exchange only
 width, frame, and mouse messages. The controller routes the existing
 `zjstatus::notify::<message>` protocol by composing a timed top-right notice into
 the originating tab's frame without changing layout or focus. Without a `role`,
-zjstatus keeps its standalone behavior. Command
-launches are limited to one per configured interval even when the same frame is
+zjstatus keeps its standalone behavior. Controller/view messages carry the
+client ID, and per-client tab updates retain focus after the shared session
+snapshot primes startup state. Command launches are limited to one per
+configured interval even when the same frame is
 evaluated repeatedly.
 `command_<name>_placeholder` optionally renders literal text until that command's
 first result; its empty default preserves upstream behavior.
