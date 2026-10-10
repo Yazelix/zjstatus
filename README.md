@@ -18,6 +18,9 @@ client ID, and per-client tab updates retain focus after the shared session
 snapshot primes startup state. Command launches are limited to one per
 configured interval even when the same frame is
 evaluated repeatedly.
+Mode updates discard unused keymaps before caching or rendering, keeping startup
+and client attachment within Zellij's plugin memory limit. Remove this delta when
+upstream provides equivalent bounded mode-state retention.
 `command_<name>_placeholder` optionally renders literal text until that command's
 first result; its empty default preserves upstream behavior.
 The remaining runtime patches are removable when upstream supplies equivalent
