@@ -10,7 +10,7 @@ use zjstatus::{
     config::{self, ModuleConfig, UpdateEventMask, ZellijState},
     frames, pipe,
     widgets::{
-        command::{store_command_result, CommandWidget},
+        command::{CommandWidget, store_command_result},
         datetime::DateTimeWidget,
         mode::ModeWidget,
         notification::{self, NotificationWidget},
@@ -323,7 +323,11 @@ impl ZellijPlugin for State {
     }
 
     #[tracing::instrument(skip_all, fields(event_type))]
-    fn update(&mut self, event: Event) -> bool {
+    fn update(&mut self, mut event: Event) -> bool {
+        // Widgets never use keymaps; retaining them can exhaust the plugin memory limit.
+        if let Event::ModeUpdate(mode_info) = &mut event {
+            mode_info.keybinds.clear();
+        }
         if self.role == Role::View {
             return self.update_view(event);
         }
@@ -729,6 +733,30 @@ fn register_widgets(configuration: &BTreeMap<String, String>) -> BTreeMap<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mode_updates_keep_display_state_without_retaining_unused_keymaps() {
+        let mut state = State::default();
+        let mode = ModeInfo {
+            mode: InputMode::Locked,
+            session_name: Some("memory-proof".into()),
+            keybinds: vec![(InputMode::Normal, vec![])],
+            ..Default::default()
+        };
+        state.update(Event::ModeUpdate(mode.clone()));
+        let Event::ModeUpdate(pending) = &state.pending_events[0] else {
+            panic!("mode update was not cached");
+        };
+        assert!(pending.keybinds.is_empty());
+        assert_eq!(pending.mode, InputMode::Locked);
+        assert_eq!(pending.session_name, mode.session_name);
+
+        state.got_permissions = true;
+        state.update(Event::ModeUpdate(mode.clone()));
+        assert!(state.state.mode.keybinds.is_empty());
+        assert_eq!(state.state.mode.mode, mode.mode);
+        assert_eq!(state.state.mode.session_name, mode.session_name);
+    }
 
     #[test]
     fn controller_view_protocol_is_bounded_and_exact() {
