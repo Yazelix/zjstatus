@@ -192,6 +192,8 @@ impl ZellijPlugin for State {
         subscribe(&[
             EventType::Mouse,
             EventType::ModeUpdate,
+            // Keep unused keybindings out of frequent mode updates.
+            EventType::InitialKeybinds,
             EventType::PaneUpdate,
             EventType::PermissionRequestResult,
             EventType::Timer,
@@ -325,8 +327,10 @@ impl ZellijPlugin for State {
     #[tracing::instrument(skip_all, fields(event_type))]
     fn update(&mut self, mut event: Event) -> bool {
         // Widgets never use keymaps; retaining them can exhaust the plugin memory limit.
-        if let Event::ModeUpdate(mode_info) = &mut event {
-            mode_info.keybinds.clear();
+        match &mut event {
+            Event::ModeUpdate(mode_info) => mode_info.keybinds.clear(),
+            Event::InitialKeybinds(_) => return false,
+            _ => {}
         }
         if self.role == Role::View {
             return self.update_view(event);
@@ -743,6 +747,8 @@ mod tests {
             keybinds: vec![(InputMode::Normal, vec![])],
             ..Default::default()
         };
+        assert!(!state.update(Event::InitialKeybinds(mode.keybinds.clone())));
+        assert!(state.pending_events.is_empty());
         state.update(Event::ModeUpdate(mode.clone()));
         let Event::ModeUpdate(pending) = &state.pending_events[0] else {
             panic!("mode update was not cached");
@@ -756,6 +762,16 @@ mod tests {
         assert!(state.state.mode.keybinds.is_empty());
         assert_eq!(state.state.mode.mode, mode.mode);
         assert_eq!(state.state.mode.session_name, mode.session_name);
+        let reconfigured = ModeInfo {
+            mode: InputMode::Pane,
+            keybinds: vec![],
+            ..mode.clone()
+        };
+        assert!(!state.update(Event::InitialKeybinds(mode.keybinds)));
+        state.update(Event::ModeUpdate(reconfigured.clone()));
+        assert_eq!(state.state.mode, reconfigured);
+        assert!(!state.update(Event::InitialKeybinds(vec![])));
+        assert_eq!(state.state.mode, reconfigured);
     }
 
     #[test]
