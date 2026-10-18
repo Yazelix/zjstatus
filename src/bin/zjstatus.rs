@@ -138,6 +138,7 @@ struct State {
     view_frame: String,
     views: BTreeMap<u32, usize>,
     toast_target: Option<ToastTarget>,
+    pressed_line: Option<isize>,
 }
 
 #[cfg(not(test))]
@@ -429,11 +430,19 @@ impl State {
                 }
                 true
             }
-            Event::Mouse(Mouse::LeftClick(line, col)) if self.got_permissions => {
-                pipe_message_to_plugin(
-                    client_message(VIEW_REQUEST_PIPE, get_plugin_ids().client_id)
-                        .with_payload(format!("left:{line}:{col}")),
-                );
+            // Act on release: Zellij delivers it to the tab active when it arrives, so a
+            // tab switch on press leaves this tab's drag state set and drops its next press.
+            Event::Mouse(Mouse::LeftClick(line, _)) if self.got_permissions => {
+                self.pressed_line = Some(line);
+                false
+            }
+            Event::Mouse(Mouse::Release(line, col)) => {
+                if self.pressed_line.take() == Some(line) {
+                    pipe_message_to_plugin(
+                        client_message(VIEW_REQUEST_PIPE, get_plugin_ids().client_id)
+                            .with_payload(format!("left:{line}:{col}")),
+                    );
+                }
                 false
             }
             Event::Mouse(Mouse::RightClick(line, col)) if self.got_permissions => {

@@ -24,6 +24,10 @@ upstream provides equivalent bounded mode-state retention.
 Standalone and controller roles subscribe to `InitialKeybinds` and ignore its
 payload, keeping unused keymaps out of frequent mode updates on supporting hosts.
 Views keep their mouse and permission subscriptions; the Zellij 0.44.3 floor stays.
+Views send a left click when the button is released on the pressed row. Zellij
+delivers a release to the tab active when it arrives, so switching tabs on press
+left the old tab waiting for it, and that tab ignored its next press. Remove
+this delta when Zellij clears that state on a tab switch.
 `command_<name>_placeholder` optionally renders literal text until that command's
 first result; its empty default preserves upstream behavior.
 The remaining runtime patches are removable when upstream supplies equivalent
