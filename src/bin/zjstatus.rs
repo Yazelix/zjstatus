@@ -238,6 +238,7 @@ impl ZellijPlugin for State {
             incoming_notification: None,
             focused_pane_id: None,
             focused_pane_cwd: None,
+            focused_pane_cwd_generation: 0,
         };
         self.toast_target = None;
     }
@@ -418,7 +419,7 @@ impl ZellijPlugin for State {
 }
 
 impl State {
-    fn update_focused_pane(&mut self) {
+    fn update_focused_pane(&mut self) -> bool {
         let active_tab = self.state.tabs.iter().find(|t| t.active);
 
         let new_id = active_tab
@@ -427,7 +428,7 @@ impl State {
             .map(|p| PaneId::Terminal(p.id));
 
         if new_id == self.state.focused_pane_id {
-            return;
+            return false;
         }
 
         self.state.focused_pane_id = new_id;
@@ -443,7 +444,7 @@ impl State {
             None => None,
         };
 
-        self.set_focused_pane_cwd(new_cwd);
+        self.set_focused_pane_cwd(new_cwd)
     }
 
     fn set_focused_pane_cwd(&mut self, new_cwd: Option<PathBuf>) -> bool {
@@ -452,6 +453,7 @@ impl State {
         }
 
         self.state.focused_pane_cwd = new_cwd;
+        self.state.focused_pane_cwd_generation += 1;
 
         if self.focus_cwd_commands.is_empty() {
             return false;
@@ -645,7 +647,10 @@ impl State {
                 self.state.panes = pane_info;
                 self.state.cache_mask = UpdateEventMask::Tab as u8;
 
-                self.update_focused_pane();
+                if self.update_focused_pane() {
+                    self.state.cache_mask |= UpdateEventMask::Command as u8;
+                    should_render = true;
+                }
             }
             Event::CwdChanged(pane_id, cwd, _clients) => {
                 tracing::Span::current().record("event_type", "Event::CwdChanged");
@@ -949,9 +954,11 @@ mod tests {
             state.state.command_results["command_branch"].context["timestamp"],
             original_timestamp
         );
+        assert_eq!(state.state.focused_pane_cwd_generation, 0);
 
         assert!(state.set_focused_pane_cwd(Some(PathBuf::from("/var"))));
         assert_eq!(state.state.focused_pane_cwd, Some(PathBuf::from("/var")));
+        assert_eq!(state.state.focused_pane_cwd_generation, 1);
         assert_ne!(
             state.state.command_results["command_branch"].context["timestamp"],
             original_timestamp

@@ -74,8 +74,9 @@ pub fn store_command_result(
     true
 }
 
-/// Last launch time and cwd per command, shared by every render of a frame.
-type LastRuns = RefCell<BTreeMap<String, (i64, Option<PathBuf>)>>;
+/// Last launch time per command, plus the focused-pane cwd generation for focused-cwd commands.
+/// It outlives a frame, so repeated renders launch each command at most once per interval.
+type LastRuns = RefCell<BTreeMap<String, (i64, Option<u64>)>>;
 
 pub struct CommandWidget {
     config: BTreeMap<String, CommandConfig>,
@@ -88,7 +89,7 @@ impl CommandWidget {
         Self {
             config: parse_config(config),
             zj_conf: config.clone(),
-            last_runs: RefCell::new(BTreeMap::new()),
+            last_runs: LastRuns::default(),
         }
     }
 }
@@ -223,12 +224,16 @@ fn run_command_if_needed(
     } else {
         command_config.cwd.clone()
     };
-    // A launch for another focused-pane cwd does not hold back this one.
+    // A launch from before the latest focused-pane cwd change does not hold back this one; its
+    // result may have been discarded as stale.
+    let generation = command_config
+        .follow_focus_cwd
+        .then_some(state.focused_pane_cwd_generation);
     if last_runs
         .borrow()
         .get(name)
-        .is_some_and(|(last_run, last_cwd)| {
-            *last_cwd == cwd
+        .is_some_and(|(last_run, last_generation)| {
+            *last_generation == generation
                 && (command_config.interval == 0
                     || ts.timestamp() - last_run < command_config.interval)
         })
@@ -240,7 +245,7 @@ fn run_command_if_needed(
     if ts.timestamp() - last_run.timestamp() >= command_config.interval {
         last_runs
             .borrow_mut()
-            .insert(name.to_owned(), (ts.timestamp(), cwd.clone()));
+            .insert(name.to_owned(), (ts.timestamp(), generation));
 
         let mut context = BTreeMap::new();
         context.insert("name".to_owned(), name.to_owned());
@@ -614,8 +619,27 @@ mod test {
             &last_runs
         ));
 
-        state.focused_pane_cwd = Some(PathBuf::from("/var"));
+        fn focus(state: &mut ZellijState, cwd: Option<&str>) {
+            state.focused_pane_cwd = cwd.map(PathBuf::from);
+            state.focused_pane_cwd_generation += 1;
+        }
+        focus(&mut state, Some("/var"));
+        assert!(run_command_if_needed(
+            command_config.clone(),
+            "test_cwd",
+            &state,
+            &last_runs
+        ));
 
+        // The /var result was discarded when focus left; returning must launch again.
+        focus(&mut state, None);
+        assert!(!run_command_if_needed(
+            command_config.clone(),
+            "test_cwd",
+            &state,
+            &last_runs
+        ));
+        focus(&mut state, Some("/var"));
         assert!(run_command_if_needed(
             command_config,
             "test_cwd",
@@ -676,7 +700,7 @@ mod test {
             click_action: "".to_owned(),
             hide_on_empty_stdout: false,
         };
-        let last_runs = RefCell::new(BTreeMap::new());
+        let last_runs = LastRuns::default();
         let res = run_command_if_needed(config.clone(), "test", state, &last_runs);
         if res {
             assert!(!run_command_if_needed(config, "test", state, &last_runs));

@@ -88,8 +88,8 @@ fn rerun_command(state: &mut ZellijState, command_name: &str) {
     invalidate_command_result(state, command_name);
 }
 
-/// Backdates the stored timestamp of a command result so the next render
-/// re-runs the command.
+/// Backdates the stored timestamp of a command result so the next render that the
+/// widget's launch guard allows re-runs the command.
 pub fn invalidate_command_result(state: &mut ZellijState, command_name: &str) {
     let Some(command_result) = state.command_results.get_mut(command_name) else {
         return;

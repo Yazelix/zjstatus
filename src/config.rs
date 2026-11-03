@@ -22,6 +22,8 @@ pub struct ZellijState {
     pub cache_mask: u8,
     pub focused_pane_id: Option<PaneId>,
     pub focused_pane_cwd: Option<std::path::PathBuf>,
+    /// Bumped on every focused-pane cwd change; releases focused-cwd command launch guards.
+    pub focused_pane_cwd_generation: u64,
 }
 
 pub fn apply_current_session_snapshot(
