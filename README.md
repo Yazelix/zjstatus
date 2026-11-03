@@ -2,10 +2,9 @@
 
 ## Yazelix fork
 
-The upstream baseline is `dj95/zjstatus` commit `17609e4` (including native bell
-tab formatting). The maintained delta provides host-theme configuration
-(`a9859a9`), separator-safe pipe payloads, command-test isolation, and opt-in
-tabs-first widget fitting. Startup state is applied in arrival order, unchanged
+The upstream baseline is `dj95/zjstatus` v0.25.0 (commit `7f86898`). The
+maintained delta provides host-theme configuration, separator-safe pipe payloads,
+and opt-in tabs-first widget fitting. Startup state is applied in arrival order, unchanged
 snapshots do not redraw the bar, and command results redraw immediately. Native
 tab identity and indicators are retained; the former execution/activity overlay
 is removed. Nova can opt into one background `controller` that owns state,
@@ -16,14 +15,15 @@ the originating tab's frame without changing layout or focus. Without a `role`,
 zjstatus keeps its standalone behavior. Controller/view messages carry the
 client ID, and per-client tab updates retain focus after the shared session
 snapshot primes startup state. Command launches are limited to one per
-configured interval even when the same frame is
-evaluated repeatedly.
+configured interval even when the same frame is evaluated repeatedly; a
+`{focused_pane_cwd}` command may launch again as soon as the focused cwd changes.
 Mode updates discard unused keymaps before caching or rendering, keeping startup
 and client attachment within Zellij's plugin memory limit. Remove this delta when
 upstream provides equivalent bounded mode-state retention.
 Standalone and controller roles subscribe to `InitialKeybinds` and ignore its
 payload, keeping unused keymaps out of frequent mode updates on supporting hosts.
-Views keep their mouse and permission subscriptions; the Zellij 0.44.3 floor stays.
+Views keep their mouse and permission subscriptions. The plugin builds against
+zellij-tile 0.45.0; older Zellij hosts are untested.
 Views send a left click when the button is released on the pressed row. Zellij
 delivers a release to the tab active when it arrives, so switching tabs on press
 left the old tab waiting for it, and that tab ignored its next press. Remove
@@ -49,8 +49,8 @@ format_precedence "lrc"
 format_hide_on_overlength "true"
 ```
 
-The leftmost segments survive longest. Empty output takes no space or separator;
-whole segments disappear from the right and return as width permits. Hidden
+The rightmost segments survive longest. Empty output takes no space or separator;
+whole segments disappear from the left and return as width permits. Hidden
 widgets keep receiving updates and command refreshes. If tabs
 alone overflow, the active tab stays in a smaller native window. Its name is
 shortened only after neighboring tabs and hidden-tab counts have been removed.
